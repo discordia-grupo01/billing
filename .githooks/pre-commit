@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Autoformatea los archivos .go staged antes de cada commit.
+# Se activa una vez por clone con: git config core.hooksPath .githooks
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACM -- "*.go")
+
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+
+echo "Formateando con gofmt..."
+gofmt -w $STAGED
+
+# Si tienen goimports instalado (ordena imports ademas de formatear), lo usa en su lugar
+if command -v goimports >/dev/null 2>&1; then
+  goimports -w $STAGED
+fi
+
+git add $STAGED
+
+exit 0

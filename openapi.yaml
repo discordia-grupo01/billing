@@ -1,0 +1,16 @@
+openapi: 3.0.3
+info:
+  title: Discordia - SERVICIO
+  version: "1.0.0"
+paths:
+  /livez:
+    get:
+      summary: Liveness check
+      responses:
+        "200": { description: OK }
+  /readyz:
+    get:
+      summary: Readiness check
+      responses:
+        "200": { description: OK }
+        "503": { description: Dependencias no disponibles }

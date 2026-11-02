@@ -16,6 +16,13 @@ import (
 
 var _ service.PaymentGateway = (*Client)(nil)
 
+const (
+	// Shown on the buyer's card statement; a recognizable name lowers chargebacks.
+	statementDescriptor = "DISCORDIA"
+	// Points are a digital good; MP uses the category for fraud prevention.
+	pointsCategoryID = "virtual_goods"
+)
+
 // Client adapts the Mercado Pago SDK to the PaymentGateway port. API errors
 // come back wrapped; use errors.As with *mperror.ResponseError to inspect them.
 type Client struct {
@@ -45,10 +52,32 @@ func (c *Client) CreatePointsOrder(ctx context.Context, req model.PointsOrderReq
 		ProcessingMode:    "manual",
 		TotalAmount:       amount,
 		ExternalReference: req.ExternalReference,
-		Items:             []order.ItemsRequest{{Title: req.Title, UnitPrice: amount, Quantity: 1}},
+		Items: []order.ItemsRequest{{
+			ID:          req.ItemID,
+			Title:       req.Title,
+			Description: req.Description,
+			CategoryID:  pointsCategoryID,
+			UnitPrice:   amount,
+			Quantity:    1,
+		}},
+		Config: &order.ConfigRequest{StatementDescriptor: statementDescriptor},
 	}
-	if req.PayerEmail != "" {
-		body.Payer = &order.PayerRequest{Email: req.PayerEmail}
+	if req.PayerEmail != "" || req.PayerFirstName != "" || req.PayerLastName != "" {
+		body.Payer = &order.PayerRequest{
+			Email:     req.PayerEmail,
+			FirstName: req.PayerFirstName,
+			LastName:  req.PayerLastName,
+		}
+	}
+	if req.SuccessURL != "" {
+		// "all" brings the buyer back on any outcome: the return page polls
+		// billing for the real status instead of trusting the redirect.
+		body.Config.Online = &order.OnlineConfigRequest{
+			SuccessURL: req.SuccessURL,
+			FailureURL: req.FailureURL,
+			PendingURL: req.PendingURL,
+			AutoReturn: "all",
+		}
 	}
 
 	ctx = requestoptions.WithIdempotencyKey(ctx, req.IdempotencyKey)

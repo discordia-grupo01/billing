@@ -64,8 +64,15 @@ func TestCreatePointsOrder(t *testing.T) {
 		IdempotencyKey:    "key-1",
 		ExternalReference: "purchase-42",
 		PayerEmail:        "buyer@test.com",
+		PayerFirstName:    "Ana",
+		PayerLastName:     "Pérez",
+		ItemID:            "points_500",
 		Title:             "500 puntos",
+		Description:       "500 puntos de Discordia",
 		AmountCents:       150050,
+		SuccessURL:        "https://discordia.test/billing/return?r=success",
+		FailureURL:        "https://discordia.test/billing/return?r=failure",
+		PendingURL:        "https://discordia.test/billing/return?r=pending",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -93,15 +100,32 @@ func TestCreatePointsOrder(t *testing.T) {
 		t.Errorf("external_reference = %v", got.body["external_reference"])
 	}
 	items, _ := got.body["items"].([]any)
-	if len(items) != 1 || items[0].(map[string]any)["unit_price"] != "1500.50" {
-		t.Errorf("items = %v", got.body["items"])
+	if len(items) != 1 {
+		t.Fatalf("items = %v", got.body["items"])
 	}
-	if payer, _ := got.body["payer"].(map[string]any); payer["email"] != "buyer@test.com" {
+	item := items[0].(map[string]any)
+	if item["unit_price"] != "1500.50" || item["quantity"] != 1.0 || item["id"] != "points_500" ||
+		item["description"] != "500 puntos de Discordia" || item["category_id"] != "virtual_goods" {
+		t.Errorf("item = %v", item)
+	}
+	payer, _ := got.body["payer"].(map[string]any)
+	if payer["email"] != "buyer@test.com" || payer["first_name"] != "Ana" || payer["last_name"] != "Pérez" {
 		t.Errorf("payer = %v", got.body["payer"])
+	}
+	cfg, _ := got.body["config"].(map[string]any)
+	if cfg["statement_descriptor"] != "DISCORDIA" {
+		t.Errorf("statement_descriptor = %v", cfg["statement_descriptor"])
+	}
+	online, _ := cfg["online"].(map[string]any)
+	if online["success_url"] != "https://discordia.test/billing/return?r=success" ||
+		online["failure_url"] != "https://discordia.test/billing/return?r=failure" ||
+		online["pending_url"] != "https://discordia.test/billing/return?r=pending" ||
+		online["auto_return"] != "all" {
+		t.Errorf("config.online = %v", online)
 	}
 }
 
-func TestCreatePointsOrderOmitsPayerWithoutEmail(t *testing.T) {
+func TestCreatePointsOrderOmitsOptionalBlocks(t *testing.T) {
 	client, got := newServer(t, http.StatusCreated, `{"id":"ORD1"}`)
 
 	_, err := client.CreatePointsOrder(context.Background(), model.PointsOrderRequest{
@@ -112,6 +136,10 @@ func TestCreatePointsOrderOmitsPayerWithoutEmail(t *testing.T) {
 	}
 	if _, ok := got.body["payer"]; ok {
 		t.Errorf("payer should be omitted, got %v", got.body["payer"])
+	}
+	cfg, _ := got.body["config"].(map[string]any)
+	if _, ok := cfg["online"]; ok {
+		t.Errorf("config.online should be omitted without back URLs, got %v", cfg["online"])
 	}
 }
 

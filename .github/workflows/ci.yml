@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, develop]
 
 jobs:
   test:
@@ -37,4 +37,15 @@ jobs:
 
       - run: go build ./...
       - run: go vet ./...
-      - run: go test ./... -cover
+      - name: Tests
+        # -coverpkg mide la cobertura de todo internal/, no solo la del paquete
+        # que tiene el test (mismo criterio que servers e identify-service).
+        run: go test ./... -coverpkg=./internal/... -coverprofile=coverage.out
+      - name: Verificar cobertura minima (70%)
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "Cobertura total: ${COVERAGE}%"
+          if awk "BEGIN {exit !($COVERAGE < 70)}"; then
+            echo "::error::Cobertura ${COVERAGE}% por debajo del minimo requerido (70%)"
+            exit 1
+          fi

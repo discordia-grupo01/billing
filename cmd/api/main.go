@@ -3,28 +3,18 @@ package main
 import (
 	"log"
 	"net/http"
-	"os"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/discordia-grupo01/billing/internal/config"
 )
 
 func main() {
-	environment := os.Getenv("ENVIRONMENT")
-	if environment == "" {
-		environment = "development"
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("config: %v", err)
 	}
-
-	host := os.Getenv("HOST")
-	if host == "" {
-		host = "0.0.0.0"
-	}
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	if environment == "production" {
+	if cfg.IsProduction() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
@@ -42,10 +32,10 @@ func main() {
 	})
 
 	router.GET("/", func(c *gin.Context) {
-		c.String(http.StatusOK, "discordia-SERVICIO up")
+		c.String(http.StatusOK, "discordia-billing up")
 	})
 
-	addr := host + ":" + port
+	addr := cfg.Host + ":" + cfg.Port
 	log.Printf("listening on %s", addr)
 	log.Fatal(router.Run(addr))
 }

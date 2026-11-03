@@ -45,6 +45,13 @@ func seedPurchase(store *fakePointsStore, status model.PurchaseStatus) {
 	}
 }
 
+// rejectedAttempt is an order still open after the card was rejected.
+func rejectedAttempt(status string) model.PointsOrder {
+	o := orderWith(status, "waiting_payment")
+	o.LastPaymentStatus, o.LastPaymentStatusDetail = "failed", "rejected_by_issuer"
+	return o
+}
+
 func orderWith(status, detail string) model.PointsOrder {
 	return model.PointsOrder{
 		ID: "ORD1", Status: status, StatusDetail: detail,
@@ -214,6 +221,12 @@ func TestProcessOrderNotification(t *testing.T) {
 			orderWith("processing", "in_process"), model.PurchaseStatusPending, 0, ""},
 		{"action required does nothing", model.PurchaseStatusPending,
 			orderWith("action_required", "waiting_payment"), model.PurchaseStatusPending, 0, ""},
+		{"rejected card marks it failed with the reason", model.PurchaseStatusPending,
+			rejectedAttempt("action_required"), model.PurchaseStatusFailed, 0, "rejected_by_issuer"},
+		{"rejected card while still created marks it failed", model.PurchaseStatusPending,
+			rejectedAttempt("created"), model.PurchaseStatusFailed, 0, "rejected_by_issuer"},
+		{"rejected card never undoes a payment", model.PurchaseStatusPaid,
+			rejectedAttempt("action_required"), model.PurchaseStatusPaid, seedPoints, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -233,6 +246,30 @@ func TestProcessOrderNotification(t *testing.T) {
 				t.Errorf("balance = %d, want %d", b, tt.wantBalance)
 			}
 		})
+	}
+}
+
+// The buyer's card is rejected and then they pay with another one in the same
+// checkout: the purchase goes failed and then paid.
+func TestProcessOrderNotificationRetryAfterRejectedCard(t *testing.T) {
+	store := newFakePointsStore()
+	seedPurchase(store, model.PurchaseStatusPending)
+	gw := &fakeGateway{order: rejectedAttempt("action_required")}
+	s := newPointsService(store, gw)
+
+	if err := s.ProcessOrderNotification(context.Background(), "ORD1"); err != nil {
+		t.Fatalf("rejected attempt: %v", err)
+	}
+	if p := store.purchases[purchaseID]; p.Status != model.PurchaseStatusFailed {
+		t.Fatalf("after the rejection: %s, want failed", p.Status)
+	}
+
+	gw.order = orderWith("processed", "accredited")
+	if err := s.ProcessOrderNotification(context.Background(), "ORD1"); err != nil {
+		t.Fatalf("approved attempt: %v", err)
+	}
+	if p := store.purchases[purchaseID]; p.Status != model.PurchaseStatusPaid || store.balances[userID] != seedPoints {
+		t.Errorf("after paying with another card: %s with balance %d, want paid with %d", p.Status, store.balances[userID], seedPoints)
 	}
 }
 

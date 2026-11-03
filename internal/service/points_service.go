@@ -230,6 +230,12 @@ func (s *PointsService) ProcessOrderNotification(ctx context.Context, orderID st
 		err = s.reverse(ctx, purchase, model.LedgerReasonChargeback)
 	default:
 		// created, processing, action_required, in_review: still in progress.
+		// If the card was rejected the order stays open so the buyer can try
+		// another one; marking the purchase failed lets the return page say
+		// so. A later approved attempt still credits it.
+		if order.LastPaymentStatus == model.OrderPaymentStatusFailed {
+			_, err = s.store.MarkUnpaid(ctx, purchase.ID, model.PurchaseStatusFailed, order.LastPaymentStatusDetail)
+		}
 	}
 	return err
 }

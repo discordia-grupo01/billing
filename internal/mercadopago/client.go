@@ -122,14 +122,19 @@ func (c *Client) GetPointsOrder(ctx context.Context, orderID string) (model.Poin
 	if err != nil {
 		return model.PointsOrder{}, fmt.Errorf("mercadopago: order %s: %w", orderID, err)
 	}
-	return model.PointsOrder{
+	order := model.PointsOrder{
 		ID:                resp.ID,
 		Status:            resp.Status,
 		StatusDetail:      resp.StatusDetail,
 		ExternalReference: resp.ExternalReference,
 		AmountCents:       amount,
 		CheckoutURL:       resp.CheckoutURL,
-	}, nil
+	}
+	if payments := resp.Transactions.Payments; len(payments) > 0 {
+		last := payments[len(payments)-1]
+		order.LastPaymentStatus, order.LastPaymentStatusDetail = last.Status, last.StatusDetail
+	}
+	return order, nil
 }
 
 func (c *Client) CreateSubscription(ctx context.Context, req model.SubscriptionRequest) (model.Subscription, error) {

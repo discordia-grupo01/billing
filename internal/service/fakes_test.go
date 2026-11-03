@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -18,6 +19,13 @@ type fakeGateway struct {
 	order     model.PointsOrder
 	createErr error
 	getErr    error
+
+	subReq    model.SubscriptionRequest
+	sub       model.Subscription
+	cancelled []string
+	charges   []model.Charge
+	payment   model.Payment
+	failOn    map[string]error
 }
 
 var _ PaymentGateway = (*fakeGateway)(nil)
@@ -37,28 +45,68 @@ func (g *fakeGateway) GetPointsOrder(_ context.Context, orderID string) (model.P
 	return g.order, nil
 }
 
-func (g *fakeGateway) CreateSubscription(context.Context, model.SubscriptionRequest) (model.Subscription, error) {
-	return model.Subscription{}, errors.New("not implemented")
+func (g *fakeGateway) CreateSubscription(_ context.Context, req model.SubscriptionRequest) (model.Subscription, error) {
+	g.subReq = req
+	if err := g.failOn["CreateSubscription"]; err != nil {
+		return model.Subscription{}, err
+	}
+	return g.sub, nil
 }
 
-func (g *fakeGateway) GetSubscription(context.Context, string) (model.Subscription, error) {
-	return model.Subscription{}, errors.New("not implemented")
+func (g *fakeGateway) GetSubscription(_ context.Context, id string) (model.Subscription, error) {
+	if err := g.failOn["GetSubscription"]; err != nil {
+		return model.Subscription{}, err
+	}
+	if g.sub.ID != id {
+		return model.Subscription{}, fmt.Errorf("preapproval %s: %w", id, ErrNotFound)
+	}
+	return g.sub, nil
 }
 
-func (g *fakeGateway) CancelSubscription(context.Context, string) (model.Subscription, error) {
-	return model.Subscription{}, errors.New("not implemented")
+func (g *fakeGateway) CancelSubscription(_ context.Context, id string) (model.Subscription, error) {
+	g.cancelled = append(g.cancelled, id)
+	if err := g.failOn["CancelSubscription"]; err != nil {
+		return model.Subscription{}, err
+	}
+	if g.sub.ID == id {
+		g.sub.Status = model.SubscriptionStatusCancelled
+	}
+	return model.Subscription{ID: id, Status: model.SubscriptionStatusCancelled}, nil
 }
 
-func (g *fakeGateway) GetSubscriptionCharge(context.Context, string) (model.Charge, error) {
-	return model.Charge{}, errors.New("not implemented")
+func (g *fakeGateway) GetSubscriptionCharge(_ context.Context, id string) (model.Charge, error) {
+	if err := g.failOn["GetSubscriptionCharge"]; err != nil {
+		return model.Charge{}, err
+	}
+	for _, c := range g.charges {
+		if c.AuthorizedPaymentID == id {
+			return c, nil
+		}
+	}
+	return model.Charge{}, fmt.Errorf("authorized payment %s: %w", id, ErrNotFound)
 }
 
-func (g *fakeGateway) ListSubscriptionCharges(context.Context, string) ([]model.Charge, error) {
-	return nil, errors.New("not implemented")
+func (g *fakeGateway) ListSubscriptionCharges(_ context.Context, id string) ([]model.Charge, error) {
+	if err := g.failOn["ListSubscriptionCharges"]; err != nil {
+		return nil, err
+	}
+	var out []model.Charge
+	for _, c := range g.charges {
+		if c.PreapprovalID == id {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
-func (g *fakeGateway) GetPayment(context.Context, string) (model.Payment, error) {
-	return model.Payment{}, errors.New("not implemented")
+func (g *fakeGateway) GetPayment(_ context.Context, id string) (model.Payment, error) {
+	if err := g.failOn["GetPayment"]; err != nil {
+		return model.Payment{}, err
+	}
+	if g.payment.ID != id {
+		return model.Payment{}, fmt.Errorf("payment %s: %w", id, ErrNotFound)
+	}
+	return g.payment, nil
 }
 
 // fakePointsStore mimics the transitions of the real repository in memory.
@@ -178,4 +226,186 @@ func (f *fakePointsStore) Balance(_ context.Context, userID uuid.UUID) (int64, e
 func (f *fakePointsStore) ListLedger(_ context.Context, _ uuid.UUID, limit int) ([]model.LedgerEntry, error) {
 	f.lastLimit = limit
 	return f.ledger, f.record("ListLedger")
+}
+
+// fakePremiumStore mimics the real premium repository in memory, including
+// the one-live-subscription-per-user rule and the charge bookkeeping.
+type fakePremiumStore struct {
+	subs    []model.SubscriptionRecord // in creation order
+	premium map[uuid.UUID]model.Premium
+	charges map[string]model.Charge
+	now     time.Time
+	failOn  map[string]error
+}
+
+func newFakePremiumStore(now time.Time) *fakePremiumStore {
+	return &fakePremiumStore{premium: map[uuid.UUID]model.Premium{}, charges: map[string]model.Charge{}, now: now}
+}
+
+func (f *fakePremiumStore) sub(id string) (int, bool) {
+	for i, s := range f.subs {
+		if s.MPPreapprovalID == id {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func (f *fakePremiumStore) otherLive(userID uuid.UUID, exceptID string) bool {
+	for _, s := range f.subs {
+		if s.UserID == userID && s.MPPreapprovalID != exceptID &&
+			(s.MPStatus == model.SubscriptionStatusAuthorized || s.MPStatus == model.SubscriptionStatusPaused) {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fakePremiumStore) CreateSubscription(_ context.Context, s model.SubscriptionRecord) (model.SubscriptionRecord, error) {
+	if err := f.failOn["CreateSubscription"]; err != nil {
+		return model.SubscriptionRecord{}, err
+	}
+	f.subs = append(f.subs, s)
+	return s, nil
+}
+
+func (f *fakePremiumStore) GetSubscription(_ context.Context, id string) (model.SubscriptionRecord, error) {
+	if err := f.failOn["GetSubscription"]; err != nil {
+		return model.SubscriptionRecord{}, err
+	}
+	i, ok := f.sub(id)
+	if !ok {
+		return model.SubscriptionRecord{}, model.ErrNotFound
+	}
+	return f.subs[i], nil
+}
+
+func (f *fakePremiumStore) LatestSubscription(_ context.Context, userID uuid.UUID) (model.SubscriptionRecord, error) {
+	if err := f.failOn["LatestSubscription"]; err != nil {
+		return model.SubscriptionRecord{}, err
+	}
+	for i := len(f.subs) - 1; i >= 0; i-- {
+		if f.subs[i].UserID == userID {
+			return f.subs[i], nil
+		}
+	}
+	return model.SubscriptionRecord{}, model.ErrNotFound
+}
+
+func (f *fakePremiumStore) SyncSubscriptionStatus(_ context.Context, id, mpStatus string) (bool, error) {
+	if err := f.failOn["SyncSubscriptionStatus"]; err != nil {
+		return false, err
+	}
+	i, ok := f.sub(id)
+	if !ok {
+		return false, model.ErrNotFound
+	}
+	userID := f.subs[i].UserID
+	live := mpStatus == model.SubscriptionStatusAuthorized || mpStatus == model.SubscriptionStatusPaused
+	if live && f.otherLive(userID, id) {
+		return false, model.ErrLiveSubscriptionExists
+	}
+	f.subs[i].MPStatus = mpStatus
+
+	renews := false
+	for _, s := range f.subs {
+		if s.UserID == userID && s.MPStatus == model.SubscriptionStatusAuthorized {
+			renews = true
+		}
+	}
+	p := f.premium[userID]
+	p.UserID = userID
+	changed := p.Renews != renews
+	p.Renews = renews
+	f.premium[userID] = p
+	return changed, nil
+}
+
+func (f *fakePremiumStore) ApplyCharge(_ context.Context, c model.Charge) (bool, error) {
+	if err := f.failOn["ApplyCharge"]; err != nil {
+		return false, err
+	}
+	i, ok := f.sub(c.PreapprovalID)
+	if !ok {
+		return false, model.ErrNotFound
+	}
+	prev, seen := f.charges[c.AuthorizedPaymentID]
+	if seen {
+		c.AppliedAt = prev.AppliedAt
+	}
+	f.charges[c.AuthorizedPaymentID] = c
+	if c.AppliedAt != nil || c.PaymentStatus != model.PaymentStatusApproved {
+		return false, nil
+	}
+
+	userID := f.subs[i].UserID
+	from := f.now
+	if c.DebitDate != nil {
+		from = *c.DebitDate
+	}
+	p := f.premium[userID]
+	p.UserID = userID
+	if p.PremiumUntil != nil && p.PremiumUntil.After(from) {
+		from = *p.PremiumUntil
+	}
+	until := from.AddDate(0, 1, 0)
+	p.PremiumUntil = &until
+	f.premium[userID] = p
+	applied := f.now
+	c.AppliedAt = &applied
+	f.charges[c.AuthorizedPaymentID] = c
+	return true, nil
+}
+
+func (f *fakePremiumStore) RevokeCharge(_ context.Context, paymentID, paymentStatus string) (model.Revocation, bool, error) {
+	if err := f.failOn["RevokeCharge"]; err != nil {
+		return model.Revocation{}, false, err
+	}
+	for id, c := range f.charges {
+		if c.PaymentID != paymentID {
+			continue
+		}
+		i, _ := f.sub(c.PreapprovalID)
+		rev := model.Revocation{UserID: f.subs[i].UserID, PreapprovalID: c.PreapprovalID}
+		if c.PaymentStatus == paymentStatus {
+			return rev, false, nil
+		}
+		c.PaymentStatus = paymentStatus
+		f.charges[id] = c
+		if c.AppliedAt == nil {
+			return rev, false, nil
+		}
+		p := f.premium[rev.UserID]
+		if p.PremiumUntil != nil && p.PremiumUntil.After(f.now) {
+			now := f.now
+			p.PremiumUntil = &now
+		}
+		p.Renews = false
+		f.premium[rev.UserID] = p
+		return rev, true, nil
+	}
+	return model.Revocation{}, false, model.ErrNotFound
+}
+
+func (f *fakePremiumStore) GetPremium(_ context.Context, userID uuid.UUID) (model.Premium, error) {
+	if err := f.failOn["GetPremium"]; err != nil {
+		return model.Premium{}, err
+	}
+	p, ok := f.premium[userID]
+	if !ok {
+		return model.Premium{UserID: userID}, nil
+	}
+	return p, nil
+}
+
+func (f *fakePremiumStore) HasAppliedCharge(_ context.Context, id string) (bool, error) {
+	if err := f.failOn["HasAppliedCharge"]; err != nil {
+		return false, err
+	}
+	for _, c := range f.charges {
+		if c.PreapprovalID == id && c.AppliedAt != nil {
+			return true, nil
+		}
+	}
+	return false, nil
 }

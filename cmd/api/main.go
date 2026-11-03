@@ -17,12 +17,16 @@ import (
 	"github.com/discordia-grupo01/billing/internal/jobs"
 	"github.com/discordia-grupo01/billing/internal/mercadopago"
 	"github.com/discordia-grupo01/billing/internal/middleware"
+	"github.com/discordia-grupo01/billing/internal/outbox"
+	"github.com/discordia-grupo01/billing/internal/rabbitmq"
 	"github.com/discordia-grupo01/billing/internal/repository"
 	"github.com/discordia-grupo01/billing/internal/service"
 )
 
 // How often each job runs; see internal/jobs.
 const (
+	outboxInterval            = 2 * time.Second
+	outboxTimeout             = 30 * time.Second
 	expiryInterval            = time.Minute
 	purchaseReconcileInterval = 15 * time.Minute
 	premiumReconcileInterval  = time.Hour
@@ -88,7 +92,12 @@ func main() {
 		c.String(http.StatusOK, "discordia-billing up")
 	})
 
+	publisher := rabbitmq.NewPublisher(cfg.RabbitMQURL)
+	defer publisher.Close()
+	relay := outbox.NewRelay(repository.NewOutboxRepository(pool), publisher, cfg.BillingEventsHMACSecret)
+
 	waitJobs := jobs.Start(ctx, logger,
+		jobs.Job{Name: "outbox_relay", Interval: outboxInterval, Timeout: outboxTimeout, Run: relay.Drain},
 		jobs.Job{Name: "premium_expiry", Interval: expiryInterval, Run: premium.ExpireDue},
 		jobs.Job{Name: "points_reconcile", Interval: purchaseReconcileInterval, Run: points.ReconcilePending},
 		jobs.Job{Name: "premium_reconcile", Interval: premiumReconcileInterval, Run: premium.ReconcileSubscriptions},

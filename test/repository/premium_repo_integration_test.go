@@ -11,9 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/discordia-grupo01/billing/internal/events"
 	"github.com/discordia-grupo01/billing/internal/model"
 	"github.com/discordia-grupo01/billing/internal/repository"
+	events "github.com/discordia-grupo01/events-contract/billing"
 )
 
 var nov1 = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)

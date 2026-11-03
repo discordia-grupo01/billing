@@ -177,7 +177,7 @@ func (s *PremiumService) State(ctx context.Context, userID uuid.UUID, refresh bo
 		if err == nil && (latest.MPStatus == model.SubscriptionStatusPending || isLive(latest.MPStatus)) {
 			// The page keeps polling: show what we have instead of failing.
 			if err := s.ReconcileSubscription(ctx, latest.MPPreapprovalID); err != nil {
-				s.log.Warn("premium refresh failed", "preapproval_id", latest.MPPreapprovalID, "error", err)
+				s.log.Error("premium refresh failed", "preapproval_id", latest.MPPreapprovalID, "error", err)
 			}
 		}
 	}

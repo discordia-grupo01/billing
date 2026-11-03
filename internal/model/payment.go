@@ -23,6 +23,22 @@ type PointsOrderRequest struct {
 	PendingURL string
 }
 
+// Order statuses of the Orders API. Note "canceled" with one l, unlike
+// preapprovals and payments.
+const (
+	OrderStatusCreated        = "created"
+	OrderStatusProcessing     = "processing"
+	OrderStatusActionRequired = "action_required"
+	OrderStatusProcessed      = "processed"
+	OrderStatusFailed         = "failed"
+	OrderStatusCanceled       = "canceled"
+	OrderStatusRefunded       = "refunded"
+	OrderStatusChargedBack    = "charged_back"
+
+	OrderDetailExpired           = "expired"
+	OrderDetailPartiallyRefunded = "partially_refunded"
+)
+
 type PointsOrder struct {
 	ID                string
 	Status            string

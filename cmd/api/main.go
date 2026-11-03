@@ -3,13 +3,18 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/discordia-grupo01/billing/internal/config"
+	"github.com/discordia-grupo01/billing/internal/handler"
+	"github.com/discordia-grupo01/billing/internal/mercadopago"
+	"github.com/discordia-grupo01/billing/internal/middleware"
 	"github.com/discordia-grupo01/billing/internal/repository"
+	"github.com/discordia-grupo01/billing/internal/service"
 )
 
 func main() {
@@ -27,7 +32,26 @@ func main() {
 	}
 	defer pool.Close()
 
+	gateway, err := mercadopago.NewClient(cfg.MPAccessToken)
+	if err != nil {
+		log.Fatalf("mercadopago: %v", err)
+	}
+
+	logger := slog.Default()
+	returnURL := cfg.CheckoutReturnURL + "/billing/return"
+	points := service.NewPointsService(repository.NewPointsRepository(pool), gateway, service.ReturnURLs{
+		Success: returnURL + "?kind=points&result=success",
+		Failure: returnURL + "?kind=points&result=failure",
+		Pending: returnURL + "?kind=points&result=pending",
+	}, logger)
+	premium := service.NewPremiumService(repository.NewPremiumRepository(pool), gateway, service.PremiumConfig{
+		BackURL:        returnURL + "?kind=premium",
+		TestPayerEmail: cfg.MPTestPayerEmail,
+	}, logger)
+
 	router := gin.Default()
+	handler.NewBillingHandler(points, premium, logger).Register(router, middleware.Auth([]byte(cfg.JWTSecret)))
+	handler.NewWebhookHandler(points, premium, cfg.MPWebhookSecret, logger).Register(router)
 
 	// /livez: solo confirma que el proceso esta vivo. No toca la BDD.
 	router.GET("/livez", func(c *gin.Context) {

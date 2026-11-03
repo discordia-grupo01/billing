@@ -12,10 +12,14 @@ func setRequired(t *testing.T) {
 	t.Setenv("DATABASE_USER", "user")
 	t.Setenv("DATABASE_PASSWORD", "secret")
 	t.Setenv("MP_ACCESS_TOKEN", "token")
+	t.Setenv("JWT_SECRET", "jwt")
+	t.Setenv("MP_WEBHOOK_SECRET", "whsec")
+	t.Setenv("CHECKOUT_RETURN_URL", "https://web.test/")
 }
 
 func TestLoadReportsAllMissingVariables(t *testing.T) {
-	for _, k := range []string{"DATABASE_HOST", "DATABASE_NAME", "DATABASE_USER", "DATABASE_PASSWORD", "MP_ACCESS_TOKEN"} {
+	for _, k := range []string{"DATABASE_HOST", "DATABASE_NAME", "DATABASE_USER", "DATABASE_PASSWORD",
+		"MP_ACCESS_TOKEN", "JWT_SECRET", "MP_WEBHOOK_SECRET", "CHECKOUT_RETURN_URL"} {
 		t.Setenv(k, "")
 	}
 
@@ -23,7 +27,7 @@ func TestLoadReportsAllMissingVariables(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	want := "DATABASE_HOST, DATABASE_NAME, DATABASE_PASSWORD, DATABASE_USER, MP_ACCESS_TOKEN"
+	want := "CHECKOUT_RETURN_URL, DATABASE_HOST, DATABASE_NAME, DATABASE_PASSWORD, DATABASE_USER, JWT_SECRET, MP_ACCESS_TOKEN, MP_WEBHOOK_SECRET"
 	if !strings.Contains(err.Error(), want) {
 		t.Errorf("error = %q, want it to list %q", err, want)
 	}
@@ -65,6 +69,12 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if c.MPTestPayerEmail != "test_user_1@testuser.com" {
 		t.Errorf("MPTestPayerEmail = %q", c.MPTestPayerEmail)
+	}
+	if c.JWTSecret != "jwt" || c.MPWebhookSecret != "whsec" {
+		t.Errorf("secrets not loaded: %+v", c)
+	}
+	if c.CheckoutReturnURL != "https://web.test" {
+		t.Errorf("CheckoutReturnURL = %q, want it without the trailing slash", c.CheckoutReturnURL)
 	}
 }
 

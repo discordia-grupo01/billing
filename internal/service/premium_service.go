@@ -25,6 +25,7 @@ var (
 	// charging, so a new checkout would charge them twice.
 	ErrAlreadySubscribed  = errors.New("user already has a live subscription")
 	ErrNoLiveSubscription = errors.New("user has no subscription to cancel")
+	ErrPayerEmailRequired = errors.New("payer email is required")
 	// ErrSubscriptionMismatch means MP's subscription belongs to another
 	// user than ours. Like ErrOrderMismatch, retrying won't fix it.
 	ErrSubscriptionMismatch = errors.New("subscription does not match its owner")
@@ -103,6 +104,9 @@ func (s *PremiumService) StartCheckout(ctx context.Context, userID uuid.UUID, pa
 
 	if s.cfg.TestPayerEmail != "" {
 		payerEmail = s.cfg.TestPayerEmail
+	}
+	if payerEmail == "" {
+		return "", ErrPayerEmailRequired
 	}
 	sub, err := s.gateway.CreateSubscription(ctx, model.SubscriptionRequest{
 		ExternalReference: userID.String(),
@@ -243,8 +247,23 @@ func (s *PremiumService) ProcessChargeNotification(ctx context.Context, chargeID
 	return err
 }
 
-// ProcessPaymentNotification handles payment (and topic_chargebacks_wh with
-// its payment id). Only refunds and chargebacks of monthly charges matter:
+// ProcessChargebackNotification handles topic_chargebacks_wh, which carries
+// the chargeback id: the disputed payment goes through
+// ProcessPaymentNotification.
+func (s *PremiumService) ProcessChargebackNotification(ctx context.Context, chargebackID string) error {
+	paymentID, err := s.gateway.GetChargebackPaymentID(ctx, chargebackID)
+	if errors.Is(err, ErrNotFound) {
+		s.log.Info("ignoring notification for unknown chargeback", "chargeback_id", chargebackID)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return s.ProcessPaymentNotification(ctx, paymentID)
+}
+
+// ProcessPaymentNotification handles payment notifications and the payments
+// behind chargebacks. Only refunds and chargebacks of monthly charges matter:
 // Premium ends at once and the subscription is cancelled in MP. Any
 // chargeback detail counts, same as with points.
 func (s *PremiumService) ProcessPaymentNotification(ctx context.Context, paymentID string) error {

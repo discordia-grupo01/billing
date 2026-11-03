@@ -25,7 +25,9 @@ type fakeGateway struct {
 	cancelled []string
 	charges   []model.Charge
 	payment   model.Payment
-	failOn    map[string]error
+	// chargeback id -> disputed payment id
+	chargebacks map[string]string
+	failOn      map[string]error
 }
 
 var _ PaymentGateway = (*fakeGateway)(nil)
@@ -107,6 +109,17 @@ func (g *fakeGateway) GetPayment(_ context.Context, id string) (model.Payment, e
 		return model.Payment{}, fmt.Errorf("payment %s: %w", id, ErrNotFound)
 	}
 	return g.payment, nil
+}
+
+func (g *fakeGateway) GetChargebackPaymentID(_ context.Context, id string) (string, error) {
+	if err := g.failOn["GetChargebackPaymentID"]; err != nil {
+		return "", err
+	}
+	paymentID, ok := g.chargebacks[id]
+	if !ok {
+		return "", fmt.Errorf("chargeback %s: %w", id, ErrNotFound)
+	}
+	return paymentID, nil
 }
 
 // fakePointsStore mimics the transitions of the real repository in memory.

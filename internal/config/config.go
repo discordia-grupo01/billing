@@ -19,9 +19,17 @@ type Config struct {
 	DatabasePassword string
 	DatabaseSSLMode  string
 
+	// Same HS256 secret identify signs access tokens with.
+	JWTSecret string
+
 	MPAccessToken string
+	// Secret signature of the MP webhook, used to validate x-signature.
+	MPWebhookSecret string
 	// Sandbox only: MP rejects subscriptions whose payer is not the test buyer.
 	MPTestPayerEmail string
+	// Public base URL of the web client. MP sends the buyer back to
+	// <base>/billing/return after paying; it can't be localhost.
+	CheckoutReturnURL string
 }
 
 func Load() (Config, error) {
@@ -37,17 +45,24 @@ func Load() (Config, error) {
 		DatabasePassword: os.Getenv("DATABASE_PASSWORD"),
 		DatabaseSSLMode:  getenv("DATABASE_SSLMODE", "disable"),
 
-		MPAccessToken:    os.Getenv("MP_ACCESS_TOKEN"),
-		MPTestPayerEmail: os.Getenv("MP_TEST_PAYER_EMAIL"),
+		JWTSecret: os.Getenv("JWT_SECRET"),
+
+		MPAccessToken:     os.Getenv("MP_ACCESS_TOKEN"),
+		MPWebhookSecret:   os.Getenv("MP_WEBHOOK_SECRET"),
+		MPTestPayerEmail:  os.Getenv("MP_TEST_PAYER_EMAIL"),
+		CheckoutReturnURL: strings.TrimRight(os.Getenv("CHECKOUT_RETURN_URL"), "/"),
 	}
 
 	var missing []string
 	for k, v := range map[string]string{
-		"DATABASE_HOST":     c.DatabaseHost,
-		"DATABASE_NAME":     c.DatabaseName,
-		"DATABASE_USER":     c.DatabaseUser,
-		"DATABASE_PASSWORD": c.DatabasePassword,
-		"MP_ACCESS_TOKEN":   c.MPAccessToken,
+		"DATABASE_HOST":       c.DatabaseHost,
+		"DATABASE_NAME":       c.DatabaseName,
+		"DATABASE_USER":       c.DatabaseUser,
+		"DATABASE_PASSWORD":   c.DatabasePassword,
+		"JWT_SECRET":          c.JWTSecret,
+		"MP_ACCESS_TOKEN":     c.MPAccessToken,
+		"MP_WEBHOOK_SECRET":   c.MPWebhookSecret,
+		"CHECKOUT_RETURN_URL": c.CheckoutReturnURL,
 	} {
 		if v == "" {
 			missing = append(missing, k)

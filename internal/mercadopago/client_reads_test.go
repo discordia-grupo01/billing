@@ -193,6 +193,29 @@ func TestGetPaymentRejectsNonNumericID(t *testing.T) {
 	}
 }
 
+func TestGetChargebackPaymentID(t *testing.T) {
+	client, got := newServer(t, http.StatusOK, `{"id":"CB1","payment_id":555}`)
+
+	id, err := client.GetChargebackPaymentID(context.Background(), "CB1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.method != http.MethodGet || got.path != "/v1/chargebacks/CB1" {
+		t.Errorf("unexpected request %s %s", got.method, got.path)
+	}
+	if id != "555" {
+		t.Errorf("payment id = %q, want 555", id)
+	}
+}
+
+func TestGetChargebackPaymentIDWithoutPayment(t *testing.T) {
+	client, _ := newServer(t, http.StatusOK, `{"id":"CB1"}`)
+
+	if _, err := client.GetChargebackPaymentID(context.Background(), "CB1"); err == nil {
+		t.Fatal("expected error for a chargeback without payment")
+	}
+}
+
 func TestReadsRequireID(t *testing.T) {
 	client, got := newServer(t, http.StatusOK, `{}`)
 	ctx := context.Background()
@@ -202,6 +225,7 @@ func TestReadsRequireID(t *testing.T) {
 		"GetSubscription":         func() error { _, err := client.GetSubscription(ctx, ""); return err },
 		"GetSubscriptionCharge":   func() error { _, err := client.GetSubscriptionCharge(ctx, ""); return err },
 		"ListSubscriptionCharges": func() error { _, err := client.ListSubscriptionCharges(ctx, ""); return err },
+		"GetChargebackPaymentID":  func() error { _, err := client.GetChargebackPaymentID(ctx, ""); return err },
 	}
 	for name, call := range calls {
 		if err := call(); err == nil {
@@ -223,6 +247,7 @@ func TestReadsMapNotFound(t *testing.T) {
 		"GetSubscriptionCharge":   func() error { _, err := client.GetSubscriptionCharge(ctx, "1"); return err },
 		"ListSubscriptionCharges": func() error { _, err := client.ListSubscriptionCharges(ctx, "X"); return err },
 		"GetPayment":              func() error { _, err := client.GetPayment(ctx, "1"); return err },
+		"GetChargebackPaymentID":  func() error { _, err := client.GetChargebackPaymentID(ctx, "X"); return err },
 	}
 	for name, call := range calls {
 		if err := call(); !errors.Is(err, service.ErrNotFound) {

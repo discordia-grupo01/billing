@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"slices"
 
 	"github.com/google/uuid"
@@ -68,7 +69,8 @@ type PointsStore interface {
 	ListLedger(ctx context.Context, userID uuid.UUID, limit int) ([]model.LedgerEntry, error)
 }
 
-// ReturnURLs are where Mercado Pago sends the buyer back after paying.
+// ReturnURLs are where Mercado Pago sends the buyer back after paying. Each
+// checkout adds purchase_id to them, so the return page knows what to poll.
 type ReturnURLs struct {
 	Success string
 	Failure string
@@ -137,9 +139,9 @@ func (s *PointsService) StartCheckout(ctx context.Context, userID uuid.UUID, pac
 		Title:             pkg.Title,
 		Description:       pkg.Description,
 		AmountCents:       pkg.AmountCents,
-		SuccessURL:        s.urls.Success,
-		FailureURL:        s.urls.Failure,
-		PendingURL:        s.urls.Pending,
+		SuccessURL:        withPurchaseID(s.urls.Success, ref),
+		FailureURL:        withPurchaseID(s.urls.Failure, ref),
+		PendingURL:        withPurchaseID(s.urls.Pending, ref),
 	})
 	if err != nil {
 		return Checkout{}, err
@@ -148,6 +150,17 @@ func (s *PointsService) StartCheckout(ctx context.Context, userID uuid.UUID, pac
 		return Checkout{}, err
 	}
 	return Checkout{PurchaseID: purchase.ID, CheckoutURL: order.CheckoutURL}, nil
+}
+
+func withPurchaseID(rawURL, purchaseID string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || rawURL == "" {
+		return rawURL
+	}
+	q := u.Query()
+	q.Set("purchase_id", purchaseID)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // ProcessOrderNotification re-fetches the order from Mercado Pago and moves

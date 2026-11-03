@@ -20,9 +20,9 @@ var (
 
 func newPointsService(store PointsStore, gw *fakeGateway) *PointsService {
 	s := NewPointsService(store, gw, ReturnURLs{
-		Success: "https://discordia.test/return?r=success",
-		Failure: "https://discordia.test/return?r=failure",
-		Pending: "https://discordia.test/return?r=pending",
+		Success: "https://discordia.test/return?status=success",
+		Failure: "https://discordia.test/return?status=failure",
+		Pending: "https://discordia.test/return?status=pending",
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	s.newID = func() uuid.UUID { return purchaseID }
 	return s
@@ -111,8 +111,17 @@ func TestStartCheckout(t *testing.T) {
 		req.PayerEmail != "ana@test.com" || req.PayerFirstName != "Ana" || req.PayerLastName != "Pérez" {
 		t.Errorf("unexpected order request: %+v", req)
 	}
-	if req.SuccessURL == "" || req.FailureURL == "" || req.PendingURL == "" {
-		t.Errorf("return URLs not sent: %+v", req)
+	want := "https://discordia.test/return?purchase_id=" + purchaseID.String() + "&status="
+	if req.SuccessURL != want+"success" || req.FailureURL != want+"failure" || req.PendingURL != want+"pending" {
+		t.Errorf("return URLs must carry the purchase id: %+v", req)
+	}
+}
+
+func TestWithPurchaseIDKeepsInvalidURLs(t *testing.T) {
+	for _, raw := range []string{"", "://bad"} {
+		if got := withPurchaseID(raw, "p1"); got != raw {
+			t.Errorf("withPurchaseID(%q) = %q, want it unchanged", raw, got)
+		}
 	}
 }
 

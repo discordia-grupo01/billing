@@ -15,6 +15,14 @@ import (
 // What Premium costs. Like pointsPackages, this is the only place to change
 // it; it is sent to MP in pesos and stored in cents.
 const (
+	// A checkout the user never finished is cancelled in MP after this, so
+	// its link stops working and the job stops asking about it.
+	subscriptionAbandonAfter = 7 * 24 * time.Hour
+	reconcileBatch           = 500
+	expireBatch              = 100
+)
+
+const (
 	premiumPricePesos = 4999
 	premiumCurrency   = "ARS"
 	premiumReason     = "Discordia Premium"
@@ -55,6 +63,8 @@ type PremiumView struct {
 type PremiumStore interface {
 	CreateSubscription(ctx context.Context, s model.SubscriptionRecord) (model.SubscriptionRecord, error)
 	GetSubscription(ctx context.Context, preapprovalID string) (model.SubscriptionRecord, error)
+	ListSubscriptionsToReconcile(ctx context.Context, limit int) ([]model.SubscriptionRecord, error)
+	ExpireDue(ctx context.Context, limit int) (int, error)
 	LatestSubscription(ctx context.Context, userID uuid.UUID) (model.SubscriptionRecord, error)
 	SyncSubscriptionStatus(ctx context.Context, preapprovalID, mpStatus string) (bool, error)
 	ApplyCharge(ctx context.Context, c model.Charge) (bool, error)
@@ -290,6 +300,60 @@ func (s *PremiumService) ProcessPaymentNotification(ctx context.Context, payment
 	// Checked on every run, not only when RevokeCharge revoked something, so
 	// a retry still cancels if the previous attempt failed after revoking.
 	return s.cancelIfLive(ctx, rev.PreapprovalID)
+}
+
+// ExpireDue tells the rest of Discordia that Premium ended for users whose
+// premium_until passed (failed renewal or end of a cancelled period).
+func (s *PremiumService) ExpireDue(ctx context.Context) (int, error) {
+	total := 0
+	for {
+		n, err := s.store.ExpireDue(ctx, expireBatch)
+		total += n
+		if err != nil || n < expireBatch {
+			return total, err
+		}
+	}
+}
+
+// ReconcileSubscriptions runs ReconcileSubscription on every subscription MP
+// may still change, so Premium is right even if webhooks never arrive.
+// Checkouts abandoned for a week are cancelled. Errors on one subscription
+// are logged and don't stop the rest; it returns how many it looked at.
+func (s *PremiumService) ReconcileSubscriptions(ctx context.Context) (int, error) {
+	subs, err := s.store.ListSubscriptionsToReconcile(ctx, reconcileBatch)
+	if err != nil {
+		return 0, err
+	}
+	abandonedBefore := s.now().Add(-subscriptionAbandonAfter)
+	for _, sub := range subs {
+		log := s.log.With("preapproval_id", sub.MPPreapprovalID, "user_id", sub.UserID)
+		if err := s.ReconcileSubscription(ctx, sub.MPPreapprovalID); err != nil {
+			log.Error("could not reconcile subscription", "error", err)
+			continue
+		}
+		if sub.CreatedAt.Before(abandonedBefore) {
+			if err := s.cancelIfPending(ctx, sub.MPPreapprovalID); err != nil {
+				log.Error("could not cancel abandoned subscription", "error", err)
+			}
+		}
+	}
+	return len(subs), nil
+}
+
+// cancelIfPending cancels a subscription the user never authorized. The
+// status is read again because the reconcile that just ran may have changed it.
+func (s *PremiumService) cancelIfPending(ctx context.Context, preapprovalID string) error {
+	record, err := s.store.GetSubscription(ctx, preapprovalID)
+	if err != nil || record.MPStatus != model.SubscriptionStatusPending {
+		return err
+	}
+	sub, err := s.gateway.CancelSubscription(ctx, preapprovalID)
+	if err != nil {
+		return err
+	}
+	s.log.Info("cancelled abandoned subscription checkout", "preapproval_id", preapprovalID, "user_id", record.UserID)
+	_, err = s.store.SyncSubscriptionStatus(ctx, preapprovalID, sub.Status)
+	return err
 }
 
 // ReconcileSubscription brings one subscription up to date with MP: its

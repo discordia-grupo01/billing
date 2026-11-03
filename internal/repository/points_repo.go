@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -94,6 +95,29 @@ func (r *PointsRepository) ListPurchases(ctx context.Context, userID uuid.UUID, 
 		p, err := scanPurchase(rows)
 		if err != nil {
 			return nil, fmt.Errorf("repository: list purchases: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ListPendingPurchases returns purchases still pending that were created
+// before createdBefore, oldest first. The reconciliation job asks MP about
+// them in case a notification was lost.
+func (r *PointsRepository) ListPendingPurchases(ctx context.Context, createdBefore time.Time, limit int) ([]model.PointPurchase, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+purchaseColumns+` FROM point_purchases
+		WHERE status = 'pending' AND created_at < $1
+		ORDER BY created_at LIMIT $2`, createdBefore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("repository: list pending purchases: %w", err)
+	}
+	defer rows.Close()
+	var out []model.PointPurchase
+	for rows.Next() {
+		p, err := scanPurchase(rows)
+		if err != nil {
+			return nil, fmt.Errorf("repository: list pending purchases: %w", err)
 		}
 		out = append(out, p)
 	}

@@ -2,22 +2,37 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"log/slog"
 	"net/http"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/discordia-grupo01/billing/internal/config"
 	"github.com/discordia-grupo01/billing/internal/handler"
+	"github.com/discordia-grupo01/billing/internal/jobs"
 	"github.com/discordia-grupo01/billing/internal/mercadopago"
 	"github.com/discordia-grupo01/billing/internal/middleware"
 	"github.com/discordia-grupo01/billing/internal/repository"
 	"github.com/discordia-grupo01/billing/internal/service"
 )
 
+// How often each job runs; see internal/jobs.
+const (
+	expiryInterval            = time.Minute
+	purchaseReconcileInterval = 15 * time.Minute
+	premiumReconcileInterval  = time.Hour
+	shutdownTimeout           = 20 * time.Second
+)
+
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -26,7 +41,7 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	pool, err := repository.NewPool(context.Background(), cfg.PostgresDSN())
+	pool, err := repository.NewPool(ctx, cfg.PostgresDSN())
 	if err != nil {
 		log.Fatalf("postgres: %v", err)
 	}
@@ -73,7 +88,26 @@ func main() {
 		c.String(http.StatusOK, "discordia-billing up")
 	})
 
-	addr := cfg.Host + ":" + cfg.Port
-	log.Printf("listening on %s", addr)
-	log.Fatal(router.Run(addr))
+	waitJobs := jobs.Start(ctx, logger,
+		jobs.Job{Name: "premium_expiry", Interval: expiryInterval, Run: premium.ExpireDue},
+		jobs.Job{Name: "points_reconcile", Interval: purchaseReconcileInterval, Run: points.ReconcilePending},
+		jobs.Job{Name: "premium_reconcile", Interval: premiumReconcileInterval, Run: premium.ReconcileSubscriptions},
+	)
+
+	srv := &http.Server{Addr: cfg.Host + ":" + cfg.Port, Handler: router, ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		log.Printf("listening on %s", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("http: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Print("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http shutdown: %v", err)
+	}
+	waitJobs()
 }

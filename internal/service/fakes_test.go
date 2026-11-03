@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -179,6 +180,21 @@ func (f *fakePointsStore) ListPurchases(_ context.Context, _ uuid.UUID, limit in
 	return nil, f.record("ListPurchases")
 }
 
+func (f *fakePointsStore) ListPendingPurchases(_ context.Context, createdBefore time.Time, limit int) ([]model.PointPurchase, error) {
+	if err := f.record("ListPendingPurchases"); err != nil {
+		return nil, err
+	}
+	f.lastLimit = limit
+	var out []model.PointPurchase
+	for _, p := range f.purchases {
+		if p.Status == model.PurchaseStatusPending && p.CreatedAt.Before(createdBefore) {
+			out = append(out, p)
+		}
+	}
+	slices.SortFunc(out, func(a, b model.PointPurchase) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	return out, nil
+}
+
 func (f *fakePointsStore) MarkUnpaid(_ context.Context, id uuid.UUID, status model.PurchaseStatus, detail string) (bool, error) {
 	if err := f.record("MarkUnpaid"); err != nil {
 		return false, err
@@ -249,6 +265,9 @@ type fakePremiumStore struct {
 	charges map[string]model.Charge
 	now     time.Time
 	failOn  map[string]error
+
+	expireBatches []int
+	expireLimits  []int
 }
 
 func newFakePremiumStore(now time.Time) *fakePremiumStore {
@@ -291,6 +310,34 @@ func (f *fakePremiumStore) GetSubscription(_ context.Context, id string) (model.
 		return model.SubscriptionRecord{}, model.ErrNotFound
 	}
 	return f.subs[i], nil
+}
+
+func (f *fakePremiumStore) ListSubscriptionsToReconcile(_ context.Context, limit int) ([]model.SubscriptionRecord, error) {
+	if err := f.failOn["ListSubscriptionsToReconcile"]; err != nil {
+		return nil, err
+	}
+	var out []model.SubscriptionRecord
+	for _, s := range f.subs {
+		if (s.MPStatus == model.SubscriptionStatusPending || s.MPStatus == model.SubscriptionStatusAuthorized) && len(out) < limit {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// ExpireDue pops the next counts from expireBatches, mimicking batches of
+// users whose Premium ended.
+func (f *fakePremiumStore) ExpireDue(_ context.Context, limit int) (int, error) {
+	f.expireLimits = append(f.expireLimits, limit)
+	if err := f.failOn["ExpireDue"]; err != nil {
+		return 0, err
+	}
+	if len(f.expireBatches) == 0 {
+		return 0, nil
+	}
+	n := f.expireBatches[0]
+	f.expireBatches = f.expireBatches[1:]
+	return n, nil
 }
 
 func (f *fakePremiumStore) LatestSubscription(_ context.Context, userID uuid.UUID) (model.SubscriptionRecord, error) {

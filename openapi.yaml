@@ -1,7 +1,10 @@
 openapi: 3.0.3
 info:
-  title: Discordia - SERVICIO
+  title: Discordia - billing
   version: "1.0.0"
+  description: |
+    Premium y puntos con Mercado Pago. Las rutas /v1/billing requieren el
+    access token de identify (Bearer, HS256). Los montos van en centavos de ARS.
 paths:
   /livez:
     get:
@@ -14,3 +17,248 @@ paths:
       responses:
         "200": { description: OK }
         "503": { description: Dependencias no disponibles }
+
+  /v1/billing/points/packages:
+    get:
+      summary: Paquetes de puntos a la venta
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  packages:
+                    type: array
+                    items: { $ref: "#/components/schemas/Package" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/billing/points/checkout:
+    post:
+      summary: Crea una compra de puntos y devuelve la página de pago de MP
+      description: |
+        Al terminar, MP vuelve a <CHECKOUT_RETURN_URL>/billing/return?kind=points&purchase_id=…
+        La acreditación la hace el webhook; la pantalla de retorno consulta
+        GET /v1/billing/purchases/{id} hasta que deje de estar pending.
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [package_id]
+              properties:
+                package_id: { type: string, example: points_550 }
+                payer_email: { type: string, format: email, description: Opcional, precarga el email en MP }
+      responses:
+        "201":
+          description: Compra creada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  purchase_id: { type: string, format: uuid }
+                  checkout_url: { type: string, format: uri }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /v1/billing/points:
+    get:
+      summary: Saldo, últimos movimientos y últimas compras
+      security: [{ bearer: [] }]
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+          description: Aplica a ledger y a purchases
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  balance: { type: integer }
+                  ledger:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        delta: { type: integer, description: Positivo al acreditar, negativo al revertir }
+                        reason: { type: string, enum: [purchase, refund, chargeback] }
+                        created_at: { type: string, format: date-time }
+                  purchases:
+                    type: array
+                    items: { $ref: "#/components/schemas/Purchase" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/billing/purchases/{id}:
+    get:
+      summary: Estado de una compra propia (pantalla de retorno)
+      security: [{ bearer: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Purchase" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: PURCHASE_NOT_FOUND (también si es de otro usuario)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/billing/premium:
+    get:
+      summary: Estado de Premium del usuario
+      security: [{ bearer: [] }]
+      parameters:
+        - in: query
+          name: refresh
+          schema: { type: string, enum: ["1", "true"] }
+          description: Consulta a MP antes de responder (usar al volver del checkout)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Premium" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/billing/premium/checkout:
+    post:
+      summary: Crea la suscripción en MP y devuelve la página donde se carga la tarjeta
+      description: Al terminar, MP vuelve a <CHECKOUT_RETURN_URL>/billing/return?kind=premium
+      security: [{ bearer: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                payer_email:
+                  type: string
+                  format: email
+                  description: Obligatorio en producción; en sandbox se usa el comprador de prueba
+      responses:
+        "201":
+          description: Suscripción creada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checkout_url: { type: string, format: uri }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: ALREADY_SUBSCRIBED, ya tiene una suscripción que MP sigue cobrando
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/billing/premium/cancel:
+    post:
+      summary: Cancela la renovación; Premium sigue hasta premium_until
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Premium" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: NO_LIVE_SUBSCRIPTION
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /webhooks/mercadopago:
+    post:
+      summary: Notificaciones de Mercado Pago
+      description: |
+        Pública (sin JWT). Valida x-signature con MP_WEBHOOK_SECRET y una
+        tolerancia de 5 minutos. Tópicos: order, subscription_preapproval,
+        subscription_authorized_payment, payment, topic_chargebacks_wh.
+        Cada aviso vuelve a consultar el recurso en MP, así que repetirlo no
+        cambia nada.
+      parameters:
+        - { in: query, name: type, schema: { type: string } }
+        - { in: query, name: data.id, schema: { type: string } }
+        - { in: header, name: x-signature, required: true, schema: { type: string } }
+        - { in: header, name: x-request-id, schema: { type: string } }
+      responses:
+        "200": { description: Procesado o ignorado (tópico desconocido, recurso ajeno o inconsistente) }
+        "401": { description: INVALID_SIGNATURE }
+        "500": { description: Falló el procesamiento; MP reintenta }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    BadRequest:
+      description: INVALID_REQUEST, UNKNOWN_PACKAGE o PAYER_EMAIL_REQUIRED
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: UNAUTHORIZED
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InternalError:
+      description: INTERNAL_ERROR
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+    Package:
+      type: object
+      properties:
+        id: { type: string, example: points_550 }
+        points: { type: integer, example: 550 }
+        price_cents: { type: integer, example: 500000 }
+        title: { type: string, example: 550 puntos }
+    Purchase:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        package_id: { type: string }
+        points: { type: integer }
+        price_cents: { type: integer }
+        status: { type: string, enum: [pending, paid, failed, expired, refunded, charged_back] }
+        status_detail: { type: string }
+        points_unrecovered: { type: integer, description: Puntos ya gastados que no se pudieron descontar al revertir }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Premium:
+      type: object
+      properties:
+        state: { type: string, enum: [none, processing_first_payment, active, active_canceled, expired] }
+        active: { type: boolean }
+        premium_until: { type: string, format: date-time, nullable: true }
+        renews: { type: boolean }
+        mp_status: { type: string, description: Estado de la última suscripción en MP, vacío si nunca tuvo }

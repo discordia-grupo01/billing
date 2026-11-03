@@ -116,13 +116,25 @@ func TestPremiumStartCheckoutLatestSubscription(t *testing.T) {
 	}
 }
 
+func TestPremiumStartCheckoutRequiresPayerEmail(t *testing.T) {
+	gw := &fakeGateway{sub: mpSub("PRE1", "pending")}
+	s := newPremiumService(newFakePremiumStore(premiumNow), gw, PremiumConfig{})
+
+	if _, err := s.StartCheckout(context.Background(), userID, ""); !errors.Is(err, ErrPayerEmailRequired) {
+		t.Fatalf("err = %v, want ErrPayerEmailRequired", err)
+	}
+	if gw.subReq.ExternalReference != "" {
+		t.Error("no subscription should be created in MP")
+	}
+}
+
 func TestPremiumStartCheckoutErrors(t *testing.T) {
 	for _, step := range []string{"LatestSubscription", "CreateSubscription"} {
 		t.Run("store "+step, func(t *testing.T) {
 			store := newFakePremiumStore(premiumNow)
 			store.failOn = map[string]error{step: errBoom}
 			s := newPremiumService(store, &fakeGateway{sub: mpSub("PRE1", "pending")}, PremiumConfig{})
-			if _, err := s.StartCheckout(context.Background(), userID, ""); !errors.Is(err, errBoom) {
+			if _, err := s.StartCheckout(context.Background(), userID, "ana@test.com"); !errors.Is(err, errBoom) {
 				t.Errorf("err = %v, want errBoom", err)
 			}
 		})
@@ -130,7 +142,7 @@ func TestPremiumStartCheckoutErrors(t *testing.T) {
 	t.Run("gateway", func(t *testing.T) {
 		store := newFakePremiumStore(premiumNow)
 		s := newPremiumService(store, &fakeGateway{failOn: map[string]error{"CreateSubscription": errBoom}}, PremiumConfig{})
-		if _, err := s.StartCheckout(context.Background(), userID, ""); !errors.Is(err, errBoom) {
+		if _, err := s.StartCheckout(context.Background(), userID, "ana@test.com"); !errors.Is(err, errBoom) {
 			t.Errorf("err = %v, want errBoom", err)
 		}
 		if len(store.subs) != 0 {
@@ -597,6 +609,42 @@ func TestProcessPaymentNotificationErrors(t *testing.T) {
 				t.Errorf("err = %v, want errBoom", err)
 			}
 		})
+	}
+}
+
+func TestProcessChargebackNotification(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	seedPaidPremium(store)
+	gw := &fakeGateway{
+		sub:         mpSub("PRE1", "authorized"),
+		payment:     model.Payment{ID: "555", Status: model.PaymentStatusChargedBack},
+		chargebacks: map[string]string{"CB1": "555"},
+	}
+	s := newPremiumService(store, gw, PremiumConfig{})
+
+	if err := s.ProcessChargebackNotification(context.Background(), "CB1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p := store.premium[userID]; p.PremiumUntil == nil || !p.PremiumUntil.Equal(premiumNow) || p.Renews {
+		t.Errorf("Premium should end now without renewal: %+v", p)
+	}
+	if !slices.Equal(gw.cancelled, []string{"PRE1"}) {
+		t.Errorf("subscription should be cancelled in MP: %v", gw.cancelled)
+	}
+}
+
+func TestProcessChargebackNotificationUnknown(t *testing.T) {
+	s := newPremiumService(newFakePremiumStore(premiumNow), &fakeGateway{}, PremiumConfig{})
+	if err := s.ProcessChargebackNotification(context.Background(), "CB1"); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestProcessChargebackNotificationError(t *testing.T) {
+	gw := &fakeGateway{failOn: map[string]error{"GetChargebackPaymentID": errBoom}}
+	s := newPremiumService(newFakePremiumStore(premiumNow), gw, PremiumConfig{})
+	if err := s.ProcessChargebackNotification(context.Background(), "CB1"); !errors.Is(err, errBoom) {
+		t.Errorf("err = %v, want errBoom", err)
 	}
 }
 

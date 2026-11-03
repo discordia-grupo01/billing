@@ -25,4 +25,6 @@ type PaymentGateway interface {
 	ListSubscriptionCharges(ctx context.Context, subscriptionID string) ([]model.Charge, error)
 
 	GetPayment(ctx context.Context, paymentID string) (model.Payment, error)
+	// GetChargebackPaymentID returns the id of the payment a chargeback disputes.
+	GetChargebackPaymentID(ctx context.Context, chargebackID string) (string, error)
 }

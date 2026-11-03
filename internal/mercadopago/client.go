@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mercadopago/sdk-go/pkg/chargeback"
 	"github.com/mercadopago/sdk-go/pkg/config"
 	"github.com/mercadopago/sdk-go/pkg/invoice"
 	"github.com/mercadopago/sdk-go/pkg/mperror"
@@ -41,6 +42,7 @@ type Client struct {
 	subscriptions preapproval.Client
 	charges       invoice.Client
 	payments      payment.Client
+	chargebacks   chargeback.Client
 }
 
 func NewClient(accessToken string, opts ...config.Option) (*Client, error) {
@@ -53,6 +55,7 @@ func NewClient(accessToken string, opts ...config.Option) (*Client, error) {
 		subscriptions: preapproval.NewClient(cfg),
 		charges:       invoice.NewClient(cfg),
 		payments:      payment.NewClient(cfg),
+		chargebacks:   chargeback.NewClient(cfg),
 	}, nil
 }
 
@@ -222,6 +225,20 @@ func (c *Client) GetPayment(ctx context.Context, paymentID string) (model.Paymen
 		ExternalReference: resp.ExternalReference,
 		AmountCents:       floatToCents(resp.TransactionAmount),
 	}, nil
+}
+
+func (c *Client) GetChargebackPaymentID(ctx context.Context, chargebackID string) (string, error) {
+	if chargebackID == "" {
+		return "", errors.New("mercadopago: chargeback id is required")
+	}
+	resp, err := c.chargebacks.Get(ctx, chargebackID)
+	if err != nil {
+		return "", apiError("get chargeback", err)
+	}
+	if resp.PaymentID == 0 {
+		return "", fmt.Errorf("mercadopago: chargeback %s has no payment", chargebackID)
+	}
+	return strconv.Itoa(resp.PaymentID), nil
 }
 
 func toCharge(r *invoice.Response) model.Charge {

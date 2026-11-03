@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("repository: not found")
+	ErrNotFound = model.ErrNotFound
 	// ErrInvalidTransition means the purchase is in a state that does not
 	// allow the operation (e.g. reversing a purchase that was never paid).
 	ErrInvalidTransition = errors.New("repository: invalid status transition")

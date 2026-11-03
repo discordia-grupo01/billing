@@ -103,7 +103,7 @@ func (r *PointsRepository) ListPurchases(ctx context.Context, userID uuid.UUID, 
 // MarkUnpaid records a failed or expired order. It only moves a purchase
 // that is still pending, so a late "failed" notification can never undo a
 // purchase that was already paid. Returns false if nothing changed.
-func (r *PointsRepository) MarkUnpaid(ctx context.Context, purchaseID uuid.UUID, status, detail string) (bool, error) {
+func (r *PointsRepository) MarkUnpaid(ctx context.Context, purchaseID uuid.UUID, status model.PurchaseStatus, detail string) (bool, error) {
 	if status != model.PurchaseStatusFailed && status != model.PurchaseStatusExpired {
 		return false, fmt.Errorf("repository: mark unpaid: unexpected status %q", status)
 	}
@@ -167,8 +167,8 @@ func (r *PointsRepository) CreditPurchase(ctx context.Context, purchaseID uuid.U
 // purchase. The balance cannot go below zero, so only what is left is
 // deducted and the rest is stored in points_unrecovered. Returns the points
 // actually deducted; 0 with no error if it was already reversed.
-func (r *PointsRepository) ReversePurchase(ctx context.Context, purchaseID uuid.UUID, reason string) (int64, error) {
-	var newStatus string
+func (r *PointsRepository) ReversePurchase(ctx context.Context, purchaseID uuid.UUID, reason model.LedgerReason) (int64, error) {
+	var newStatus model.PurchaseStatus
 	switch reason {
 	case model.LedgerReasonRefund:
 		newStatus = model.PurchaseStatusRefunded
@@ -263,7 +263,7 @@ func ensureWallet(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 
 // insertLedger relies on UNIQUE(reason, ref_id): false means this exact
 // movement was already recorded and the caller must not touch the balance.
-func insertLedger(ctx context.Context, tx pgx.Tx, userID uuid.UUID, delta int64, reason, refID string) (bool, error) {
+func insertLedger(ctx context.Context, tx pgx.Tx, userID uuid.UUID, delta int64, reason model.LedgerReason, refID string) (bool, error) {
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO point_ledger (user_id, delta, reason, ref_id) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (reason, ref_id) DO NOTHING`, userID, delta, reason, refID)

@@ -340,6 +340,20 @@ func (f *fakePremiumStore) ExpireDue(_ context.Context, limit int) (int, error) 
 	return n, nil
 }
 
+func (f *fakePremiumStore) EndPremiumPeriod(_ context.Context, userID uuid.UUID) (bool, error) {
+	if err := f.failOn["EndPremiumPeriod"]; err != nil {
+		return false, err
+	}
+	p, ok := f.premium[userID]
+	if !ok || p.PremiumUntil == nil || !p.PremiumUntil.After(f.now) {
+		return false, nil
+	}
+	ended := f.now.Add(-time.Second)
+	p.PremiumUntil = &ended
+	f.premium[userID] = p
+	return true, nil
+}
+
 func (f *fakePremiumStore) LatestSubscription(_ context.Context, userID uuid.UUID) (model.SubscriptionRecord, error) {
 	if err := f.failOn["LatestSubscription"]; err != nil {
 		return model.SubscriptionRecord{}, err

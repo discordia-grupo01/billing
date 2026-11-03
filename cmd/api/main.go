@@ -63,7 +63,8 @@ func main() {
 		Failure: returnURL + "?kind=points&result=failure",
 		Pending: returnURL + "?kind=points&result=pending",
 	}, logger)
-	premium := service.NewPremiumService(repository.NewPremiumRepository(pool), gateway, service.PremiumConfig{
+	premiumRepo := repository.NewPremiumRepository(pool)
+	premium := service.NewPremiumService(premiumRepo, gateway, service.PremiumConfig{
 		BackURL:        returnURL + "?kind=premium",
 		TestPayerEmail: cfg.MPTestPayerEmail,
 	}, logger)
@@ -71,6 +72,11 @@ func main() {
 	router := gin.Default()
 	handler.NewBillingHandler(points, premium, logger).Register(router, middleware.Auth([]byte(cfg.JWTSecret)))
 	handler.NewWebhookHandler(points, premium, cfg.MPWebhookSecret, logger).Register(router)
+	if cfg.DevTools {
+		logger.Warn("BILLING_DEV_TOOLS is on: /dev/billing/simulate-* can renew or expire anyone's Premium")
+		simulator := service.NewPremiumSimulator(premium, premiumRepo)
+		handler.NewDevHandler(simulator, logger).Register(router)
+	}
 
 	// /livez: solo confirma que el proceso esta vivo. No toca la BDD.
 	router.GET("/livez", func(c *gin.Context) {

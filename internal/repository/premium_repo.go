@@ -298,6 +298,20 @@ func (r *PremiumRepository) ExpireDue(ctx context.Context, limit int) (int, erro
 	return expired, nil
 }
 
+// EndPremiumPeriod moves premium_until a second into the past, as if the
+// paid period had just ended; the expiry job then emits active=false. Only
+// the dev simulator calls it. Returns false if the user had no active
+// Premium.
+func (r *PremiumRepository) EndPremiumPeriod(ctx context.Context, userID uuid.UUID) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE premium_status SET premium_until = now() - interval '1 second', updated_at = now()
+		WHERE user_id = $1 AND premium_until > now()`, userID)
+	if err != nil {
+		return false, fmt.Errorf("repository: end premium period: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // GetPremium returns a zero Premium (not an error) for users that never
 // subscribed.
 func (r *PremiumRepository) GetPremium(ctx context.Context, userID uuid.UUID) (model.Premium, error) {

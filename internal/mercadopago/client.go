@@ -4,9 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 
 	"github.com/mercadopago/sdk-go/pkg/config"
+	"github.com/mercadopago/sdk-go/pkg/invoice"
+	"github.com/mercadopago/sdk-go/pkg/mperror"
 	"github.com/mercadopago/sdk-go/pkg/order"
+	"github.com/mercadopago/sdk-go/pkg/payment"
 	"github.com/mercadopago/sdk-go/pkg/preapproval"
 	"github.com/mercadopago/sdk-go/pkg/requestoptions"
 
@@ -21,13 +27,20 @@ const (
 	statementDescriptor = "DISCORDIA"
 	// Points are a digital good; MP uses the category for fraud prevention.
 	pointsCategoryID = "virtual_goods"
+	// Page size for the authorized payments search, and a cap on pages so a
+	// misbehaving API can't keep us looping.
+	chargesPageSize = 50
+	chargesMaxPages = 20
 )
 
 // Client adapts the Mercado Pago SDK to the PaymentGateway port. API errors
 // come back wrapped; use errors.As with *mperror.ResponseError to inspect them.
+// A 404 also matches service.ErrNotFound.
 type Client struct {
 	orders        order.Client
 	subscriptions preapproval.Client
+	charges       invoice.Client
+	payments      payment.Client
 }
 
 func NewClient(accessToken string, opts ...config.Option) (*Client, error) {
@@ -38,6 +51,8 @@ func NewClient(accessToken string, opts ...config.Option) (*Client, error) {
 	return &Client{
 		orders:        order.NewClient(cfg),
 		subscriptions: preapproval.NewClient(cfg),
+		charges:       invoice.NewClient(cfg),
+		payments:      payment.NewClient(cfg),
 	}, nil
 }
 
@@ -88,6 +103,28 @@ func (c *Client) CreatePointsOrder(ctx context.Context, req model.PointsOrderReq
 	return model.PointsOrder{ID: resp.ID, Status: resp.Status, CheckoutURL: resp.CheckoutURL}, nil
 }
 
+func (c *Client) GetPointsOrder(ctx context.Context, orderID string) (model.PointsOrder, error) {
+	if orderID == "" {
+		return model.PointsOrder{}, errors.New("mercadopago: order id is required")
+	}
+	resp, err := c.orders.Get(ctx, orderID)
+	if err != nil {
+		return model.PointsOrder{}, apiError("get order", err)
+	}
+	amount, err := parseCents(resp.TotalAmount)
+	if err != nil {
+		return model.PointsOrder{}, fmt.Errorf("mercadopago: order %s: %w", orderID, err)
+	}
+	return model.PointsOrder{
+		ID:                resp.ID,
+		Status:            resp.Status,
+		StatusDetail:      resp.StatusDetail,
+		ExternalReference: resp.ExternalReference,
+		AmountCents:       amount,
+		CheckoutURL:       resp.CheckoutURL,
+	}, nil
+}
+
 func (c *Client) CreateSubscription(ctx context.Context, req model.SubscriptionRequest) (model.Subscription, error) {
 	resp, err := c.subscriptions.Create(ctx, preapproval.Request{
 		Reason:            req.Reason,
@@ -108,6 +145,17 @@ func (c *Client) CreateSubscription(ctx context.Context, req model.SubscriptionR
 	return toSubscription(resp), nil
 }
 
+func (c *Client) GetSubscription(ctx context.Context, subscriptionID string) (model.Subscription, error) {
+	if subscriptionID == "" {
+		return model.Subscription{}, errors.New("mercadopago: subscription id is required")
+	}
+	resp, err := c.subscriptions.Get(ctx, subscriptionID)
+	if err != nil {
+		return model.Subscription{}, apiError("get preapproval", err)
+	}
+	return toSubscription(resp), nil
+}
+
 func (c *Client) CancelSubscription(ctx context.Context, subscriptionID string) (model.Subscription, error) {
 	if subscriptionID == "" {
 		return model.Subscription{}, errors.New("mercadopago: subscription id is required")
@@ -119,6 +167,90 @@ func (c *Client) CancelSubscription(ctx context.Context, subscriptionID string) 
 		return model.Subscription{}, fmt.Errorf("mercadopago: cancel preapproval: %w", err)
 	}
 	return toSubscription(resp), nil
+}
+
+func (c *Client) GetSubscriptionCharge(ctx context.Context, chargeID string) (model.Charge, error) {
+	if chargeID == "" {
+		return model.Charge{}, errors.New("mercadopago: charge id is required")
+	}
+	resp, err := c.charges.Get(ctx, chargeID)
+	if err != nil {
+		return model.Charge{}, apiError("get authorized payment", err)
+	}
+	return toCharge(resp), nil
+}
+
+// ListSubscriptionCharges returns every charge MP has for the subscription,
+// following the search pagination.
+func (c *Client) ListSubscriptionCharges(ctx context.Context, subscriptionID string) ([]model.Charge, error) {
+	if subscriptionID == "" {
+		return nil, errors.New("mercadopago: subscription id is required")
+	}
+	var charges []model.Charge
+	for page := 0; page < chargesMaxPages; page++ {
+		resp, err := c.charges.Search(ctx, invoice.SearchRequest{
+			Limit:   chargesPageSize,
+			Offset:  page * chargesPageSize,
+			Filters: map[string]string{"preapproval_id": subscriptionID},
+		})
+		if err != nil {
+			return nil, apiError("search authorized payments", err)
+		}
+		for i := range resp.Results {
+			charges = append(charges, toCharge(&resp.Results[i]))
+		}
+		if len(resp.Results) < chargesPageSize || len(charges) >= resp.Paging.Total {
+			return charges, nil
+		}
+	}
+	return nil, fmt.Errorf("mercadopago: subscription %s has more than %d charges", subscriptionID, chargesPageSize*chargesMaxPages)
+}
+
+func (c *Client) GetPayment(ctx context.Context, paymentID string) (model.Payment, error) {
+	id, err := strconv.Atoi(paymentID)
+	if err != nil {
+		return model.Payment{}, fmt.Errorf("mercadopago: invalid payment id %q", paymentID)
+	}
+	resp, err := c.payments.Get(ctx, id)
+	if err != nil {
+		return model.Payment{}, apiError("get payment", err)
+	}
+	return model.Payment{
+		ID:                strconv.Itoa(resp.ID),
+		Status:            resp.Status,
+		StatusDetail:      resp.StatusDetail,
+		ExternalReference: resp.ExternalReference,
+		AmountCents:       floatToCents(resp.TransactionAmount),
+	}, nil
+}
+
+func toCharge(r *invoice.Response) model.Charge {
+	c := model.Charge{
+		AuthorizedPaymentID: strconv.Itoa(r.ID),
+		PreapprovalID:       r.PreapprovalID,
+		Status:              r.Status,
+		PaymentStatus:       r.Payment.Status,
+		AmountCents:         floatToCents(r.TransactionAmount),
+		RetryAttempt:        r.RetryAttempt,
+	}
+	if r.Payment.ID != 0 {
+		c.PaymentID = strconv.Itoa(r.Payment.ID)
+	}
+	if !r.DebitDate.IsZero() {
+		d := r.DebitDate
+		c.DebitDate = &d
+	}
+	return c
+}
+
+// apiError wraps an SDK error, adding service.ErrNotFound on a 404 so callers
+// don't need to know about mperror.
+func apiError(op string, err error) error {
+	var notFound *mperror.NotFoundError
+	if errors.As(err, &notFound) {
+		return fmt.Errorf("mercadopago: %s: %w: %w", op, service.ErrNotFound, err)
+	}
+	return fmt.Errorf("mercadopago: %s: %w", op, err)
 }
 
 func toSubscription(r *preapproval.Response) model.Subscription {
@@ -137,4 +269,31 @@ func formatCents(cents int64) string {
 		cents = -cents
 	}
 	return fmt.Sprintf("%s%d.%02d", sign, cents/100, cents%100)
+}
+
+// parseCents reads the decimal strings the Orders API uses ("1500.5",
+// "1500.50", "1500") without going through float.
+func parseCents(s string) (int64, error) {
+	whole, frac, _ := strings.Cut(s, ".")
+	if whole == "" || len(frac) > 2 {
+		return 0, fmt.Errorf("invalid amount %q", s)
+	}
+	frac += strings.Repeat("0", 2-len(frac))
+	w, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid amount %q", s)
+	}
+	f, err := strconv.ParseInt(frac, 10, 64)
+	if err != nil || f < 0 {
+		return 0, fmt.Errorf("invalid amount %q", s)
+	}
+	if strings.HasPrefix(whole, "-") {
+		return w*100 - f, nil
+	}
+	return w*100 + f, nil
+}
+
+// floatToCents is for the older APIs that send amounts as JSON numbers.
+func floatToCents(v float64) int64 {
+	return int64(math.Round(v * 100))
 }

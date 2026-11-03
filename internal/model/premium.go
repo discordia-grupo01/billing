@@ -7,8 +7,13 @@ import (
 )
 
 // PaymentStatusApproved is the payment status of a monthly charge that MP
-// collected. It is the only one that extends Premium.
-const PaymentStatusApproved = "approved"
+// collected. It is the only one that extends Premium; refunded and
+// charged_back take it away.
+const (
+	PaymentStatusApproved    = "approved"
+	PaymentStatusRefunded    = "refunded"
+	PaymentStatusChargedBack = "charged_back"
+)
 
 // SubscriptionRecord is our copy of a Mercado Pago preapproval. MPStatus is
 // stored exactly as MP sends it (note: "cancelled", with two l's).
@@ -49,4 +54,11 @@ type Charge struct {
 	DebitDate     *time.Time
 	RetryAttempt  int
 	AppliedAt     *time.Time
+}
+
+// Revocation tells the caller which preapproval to cancel in MP after a
+// charge was refunded or charged back.
+type Revocation struct {
+	UserID        uuid.UUID
+	PreapprovalID string
 }

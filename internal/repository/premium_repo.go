@@ -15,9 +15,7 @@ import (
 	"github.com/discordia-grupo01/billing/internal/model"
 )
 
-// ErrLiveSubscriptionExists means the user already has another subscription
-// that MP keeps charging (authorized or paused).
-var ErrLiveSubscriptionExists = errors.New("repository: user already has a live subscription")
+var ErrLiveSubscriptionExists = model.ErrLiveSubscriptionExists
 
 const liveSubscriptionIndex = "uq_subscriptions_live_per_user"
 
@@ -209,12 +207,7 @@ func (r *PremiumRepository) ApplyCharge(ctx context.Context, c model.Charge) (bo
 	return extended, nil
 }
 
-// Revocation tells the caller which preapproval to cancel in MP after a
-// charge was refunded or charged back.
-type Revocation struct {
-	UserID        uuid.UUID
-	PreapprovalID string
-}
+type Revocation = model.Revocation
 
 // RevokeCharge handles a refunded or charged-back monthly payment: Premium
 // ends now and stops renewing. It only revokes once per payment, and only if

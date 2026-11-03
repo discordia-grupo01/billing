@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,14 +107,18 @@ func (h *WebhookHandler) receive(c *gin.Context) {
 
 	// MP signs the id lowercased. The SDK's docs say it lowercases it, but
 	// v1.14.0 doesn't, and order ids (ORD01...) are uppercase.
-	err = webhook.ValidateSignature(c.GetHeader("x-signature"), requestID, strings.ToLower(queryID), h.secret,
-		webhook.WithTolerance(signatureTolerance), webhook.WithNow(h.now))
+	signature := c.GetHeader("x-signature")
+	err = webhook.ValidateSignature(signature, requestID, strings.ToLower(queryID), h.secret)
+	reason := ""
 	if err != nil {
 		var sigErr *webhook.SignatureError
-		reason := ""
 		if errors.As(err, &sigErr) {
 			reason = string(sigErr.Reason)
 		}
+	} else if !h.recent(signature) {
+		reason = "TimestampOutOfTolerance"
+	}
+	if reason != "" || err != nil {
 		h.log.Warn("rejected webhook with invalid signature", "reason", reason, "request_id", requestID)
 		writeError(c, http.StatusUnauthorized, CodeInvalidSignature, invalidSignatureMessage)
 		return
@@ -161,6 +166,30 @@ func (h *WebhookHandler) receive(c *gin.Context) {
 		log.Error("webhook processing failed", "error", err)
 		writeError(c, http.StatusInternalServerError, CodeInternalError, internalErrorMessage)
 	}
+}
+
+// recent reports whether the signed ts is within signatureTolerance of now.
+// MP's docs say ts is in milliseconds, and the SDK's tolerance check assumes
+// so, but the panel's simulated notifications send seconds. Both are
+// accepted: anything below 10^12 is read as seconds (10^12 ms is 2001).
+func (h *WebhookHandler) recent(signature string) bool {
+	for _, part := range strings.Split(signature, ",") {
+		key, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok || strings.TrimSpace(key) != "ts" {
+			continue
+		}
+		ts, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil {
+			return false
+		}
+		signed := time.UnixMilli(ts)
+		if ts < 1e12 {
+			signed = time.Unix(ts, 0)
+		}
+		drift := h.now().Sub(signed)
+		return drift <= signatureTolerance && drift >= -signatureTolerance
+	}
+	return false
 }
 
 func (h *WebhookHandler) processor(topic string) func(context.Context, string) error {

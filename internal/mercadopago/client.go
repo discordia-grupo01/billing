@@ -266,9 +266,15 @@ func toCharge(r *invoice.Response) model.Charge {
 
 // apiError wraps an SDK error, adding service.ErrNotFound on a 404 so callers
 // don't need to know about mperror.
+//
+// A 400 that says the id in the path is invalid counts as not found too: the
+// Orders API answers that for ids that can't exist (the panel's simulated
+// notifications send "12345"), and retrying would never succeed.
 func apiError(op string, err error) error {
 	var notFound *mperror.NotFoundError
-	if errors.As(err, &notFound) {
+	var badRequest *mperror.BadRequestError
+	if errors.As(err, &notFound) ||
+		(errors.As(err, &badRequest) && strings.Contains(badRequest.Message, "invalid_path_param")) {
 		return fmt.Errorf("mercadopago: %s: %w: %w", op, service.ErrNotFound, err)
 	}
 	return fmt.Errorf("mercadopago: %s: %w", op, err)

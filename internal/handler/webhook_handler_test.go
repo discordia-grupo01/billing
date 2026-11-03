@@ -168,11 +168,12 @@ func TestWebhookIDFromBodyWhenQueryHasNone(t *testing.T) {
 
 func TestWebhookRejectsInvalidSignature(t *testing.T) {
 	tests := map[string]string{
-		"missing":      " ",
-		"malformed":    "garbage",
-		"wrong secret": signature("other", "123", "req-1", webhookNow),
-		"other id":     signature(webhookSecret, "999", "req-1", webhookNow),
-		"too old":      signature(webhookSecret, "123", "req-1", webhookNow.Add(-6*time.Minute)),
+		"missing":       " ",
+		"malformed":     "garbage",
+		"wrong secret":  signature("other", "123", "req-1", webhookNow),
+		"other id":      signature(webhookSecret, "999", "req-1", webhookNow),
+		"too old":       signature(webhookSecret, "123", "req-1", webhookNow.Add(-6*time.Minute)),
+		"too far ahead": signature(webhookSecret, "123", "req-1", webhookNow.Add(6*time.Minute)),
 	}
 	for name, sig := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -182,6 +183,34 @@ func TestWebhookRejectsInvalidSignature(t *testing.T) {
 			assertError(t, w, http.StatusUnauthorized, CodeInvalidSignature)
 			if len(rec.calls) != 0 {
 				t.Errorf("nothing should be processed: %v", rec.calls)
+			}
+		})
+	}
+}
+
+// The panel's simulated notifications sign ts in seconds, not milliseconds.
+func TestWebhookAcceptsTimestampInSeconds(t *testing.T) {
+	sign := func(at time.Time) string {
+		ts := strconv.FormatInt(at.Unix(), 10)
+		mac := hmac.New(sha256.New, []byte(webhookSecret))
+		mac.Write([]byte("id:123;request-id:req-1;ts:" + ts + ";"))
+		return "ts=" + ts + ",v1=" + hex.EncodeToString(mac.Sum(nil))
+	}
+	tests := map[string]struct {
+		at   time.Time
+		want int
+	}{
+		"now":          {webhookNow, http.StatusOK},
+		"4 min ago":    {webhookNow.Add(-4 * time.Minute), http.StatusOK},
+		"10 min ago":   {webhookNow.Add(-10 * time.Minute), http.StatusUnauthorized},
+		"10 min ahead": {webhookNow.Add(10 * time.Minute), http.StatusUnauthorized},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			rec := &recorder{}
+			w := send(newWebhookRouter(rec), delivery{topic: "payment", queryID: "123", sig: sign(tc.at)})
+			if w.Code != tc.want {
+				t.Errorf("status = %d, want %d", w.Code, tc.want)
 			}
 		})
 	}

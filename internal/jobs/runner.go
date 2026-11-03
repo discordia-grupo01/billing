@@ -8,13 +8,16 @@ import (
 	"time"
 )
 
-// Job is one periodic task. Run gets a context that ends after Interval, so
-// a slow run never overlaps the next one. It reports how many items it
-// handled, for the logs.
+// Job is one periodic task. Run reports how many items it handled, for the
+// logs. Runs of the same job never overlap: the next one starts after the
+// previous one returns.
 type Job struct {
 	Name     string
 	Interval time.Duration
-	Run      func(ctx context.Context) (int, error)
+	// Timeout bounds one run; zero means Interval. Jobs that run often but
+	// talk to a remote database need more than their interval.
+	Timeout time.Duration
+	Run     func(ctx context.Context) (int, error)
 }
 
 // Start runs each job right away and then every Interval, until ctx ends.
@@ -56,7 +59,11 @@ func runOnce(ctx context.Context, log *slog.Logger, job Job) {
 			log.Error("job panicked", "panic", r)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(ctx, job.Interval)
+	timeout := job.Timeout
+	if timeout == 0 {
+		timeout = job.Interval
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	start := time.Now()

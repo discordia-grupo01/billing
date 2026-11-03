@@ -21,6 +21,14 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
+      rabbitmq:
+        image: rabbitmq:3-alpine
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -42,6 +50,7 @@ jobs:
         # que tiene el test (mismo criterio que servers e identify-service).
         env:
           TEST_DATABASE_URL: postgres://discordia:discordia@localhost:5432/discordia_servicio?sslmode=disable
+          TEST_RABBITMQ_URL: amqp://guest:guest@localhost:5672/
         # -p 1: los tests de integracion borran y recrean las tablas.
         run: go test ./... -p 1 -coverpkg=./internal/... -coverprofile=coverage.out
       - name: Verificar cobertura minima (70%)

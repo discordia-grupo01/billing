@@ -73,3 +73,14 @@ func TestRunGetsADeadline(t *testing.T) {
 		t.Errorf("run should end within its interval, deadline %v", deadline)
 	}
 }
+
+func TestRunUsesTimeoutWhenSet(t *testing.T) {
+	var deadline time.Time
+	runOnce(context.Background(), quiet, Job{Name: "slow", Interval: time.Second, Timeout: time.Hour, Run: func(ctx context.Context) (int, error) {
+		deadline, _ = ctx.Deadline()
+		return 0, nil
+	}})
+	if time.Until(deadline) < 59*time.Minute {
+		t.Errorf("run should get the hour of Timeout, deadline %v", deadline)
+	}
+}

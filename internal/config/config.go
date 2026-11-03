@@ -22,6 +22,10 @@ type Config struct {
 	// Same HS256 secret identify signs access tokens with.
 	JWTSecret string
 
+	RabbitMQURL string
+	// Signs billing.premium_updated; identify and messaging verify it.
+	BillingEventsHMACSecret string
+
 	MPAccessToken string
 	// Secret signature of the MP webhook, used to validate x-signature.
 	MPWebhookSecret string
@@ -47,6 +51,9 @@ func Load() (Config, error) {
 
 		JWTSecret: os.Getenv("JWT_SECRET"),
 
+		RabbitMQURL:             os.Getenv("RABBITMQ_URL"),
+		BillingEventsHMACSecret: os.Getenv("BILLING_EVENTS_HMAC_SECRET"),
+
 		MPAccessToken:     os.Getenv("MP_ACCESS_TOKEN"),
 		MPWebhookSecret:   os.Getenv("MP_WEBHOOK_SECRET"),
 		MPTestPayerEmail:  os.Getenv("MP_TEST_PAYER_EMAIL"),
@@ -55,14 +62,16 @@ func Load() (Config, error) {
 
 	var missing []string
 	for k, v := range map[string]string{
-		"DATABASE_HOST":       c.DatabaseHost,
-		"DATABASE_NAME":       c.DatabaseName,
-		"DATABASE_USER":       c.DatabaseUser,
-		"DATABASE_PASSWORD":   c.DatabasePassword,
-		"JWT_SECRET":          c.JWTSecret,
-		"MP_ACCESS_TOKEN":     c.MPAccessToken,
-		"MP_WEBHOOK_SECRET":   c.MPWebhookSecret,
-		"CHECKOUT_RETURN_URL": c.CheckoutReturnURL,
+		"DATABASE_HOST":              c.DatabaseHost,
+		"DATABASE_NAME":              c.DatabaseName,
+		"DATABASE_USER":              c.DatabaseUser,
+		"DATABASE_PASSWORD":          c.DatabasePassword,
+		"JWT_SECRET":                 c.JWTSecret,
+		"RABBITMQ_URL":               c.RabbitMQURL,
+		"BILLING_EVENTS_HMAC_SECRET": c.BillingEventsHMACSecret,
+		"MP_ACCESS_TOKEN":            c.MPAccessToken,
+		"MP_WEBHOOK_SECRET":          c.MPWebhookSecret,
+		"CHECKOUT_RETURN_URL":        c.CheckoutReturnURL,
 	} {
 		if v == "" {
 			missing = append(missing, k)

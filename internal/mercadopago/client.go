@@ -71,12 +71,15 @@ func (c *Client) CreatePointsOrder(ctx context.Context, req model.PointsOrderReq
 		TotalAmount:       amount,
 		ExternalReference: req.ExternalReference,
 		Items: []order.ItemsRequest{{
-			ID:          req.ItemID,
-			Title:       req.Title,
-			Description: req.Description,
-			CategoryID:  pointsCategoryID,
-			UnitPrice:   amount,
-			Quantity:    1,
+			// The Orders API rejects "id" (the SDK has it, but MP answers
+			// "additionalProperties 'id' not allowed"); external_code is its
+			// item identifier.
+			ExternalCode: req.ItemID,
+			Title:        req.Title,
+			Description:  req.Description,
+			CategoryID:   pointsCategoryID,
+			UnitPrice:    amount,
+			Quantity:     1,
 		}},
 		Config: &order.ConfigRequest{StatementDescriptor: statementDescriptor},
 	}

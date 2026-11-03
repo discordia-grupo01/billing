@@ -11,8 +11,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/discordia-grupo01/billing/internal/events"
 	"github.com/discordia-grupo01/billing/internal/model"
+	events "github.com/discordia-grupo01/events-contract/billing"
+	"github.com/discordia-grupo01/events-contract/envelope"
 )
 
 var ErrLiveSubscriptionExists = model.ErrLiveSubscriptionExists
@@ -371,7 +372,7 @@ func emitPremiumUpdated(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error 
 		Scan(&evt.PremiumUntil, &evt.Renews, &evt.Version, &evt.Active, &occurredAt); err != nil {
 		return err
 	}
-	evt.Meta = events.Meta{EventID: uuid.NewString(), OccurredAt: occurredAt}
+	evt.Meta = envelope.Meta{EventID: uuid.NewString(), OccurredAt: occurredAt}
 	evt.UserID = userID.String()
 	return insertOutbox(ctx, tx, events.RoutingKeyPremiumUpdated, evt)
 }

@@ -104,7 +104,7 @@ func TestCreatePointsOrder(t *testing.T) {
 		t.Fatalf("items = %v", got.body["items"])
 	}
 	item := items[0].(map[string]any)
-	if item["unit_price"] != "1500.50" || item["quantity"] != 1.0 || item["id"] != "points_500" ||
+	if item["unit_price"] != "1500.50" || item["quantity"] != 1.0 || item["external_code"] != "points_500" || item["id"] != nil ||
 		item["description"] != "500 puntos de Discordia" || item["category_id"] != "virtual_goods" {
 		t.Errorf("item = %v", item)
 	}

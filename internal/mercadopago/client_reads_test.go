@@ -35,6 +35,24 @@ func TestGetPointsOrder(t *testing.T) {
 	}
 }
 
+// A rejected card leaves the order open; the failed attempt is in its
+// payments, and the latest one is what counts.
+func TestGetPointsOrderReadsLastPayment(t *testing.T) {
+	client, _ := newServer(t, http.StatusOK, `{
+		"id":"ORD123","status":"action_required","external_reference":"purchase-42","total_amount":"1000.00",
+		"transactions":{"payments":[
+			{"id":"PAY1","status":"failed","status_detail":"insufficient_amount"},
+			{"id":"PAY2","status":"failed","status_detail":"rejected_by_issuer"}]}}`)
+
+	order, err := client.GetPointsOrder(context.Background(), "ORD123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if order.LastPaymentStatus != "failed" || order.LastPaymentStatusDetail != "rejected_by_issuer" {
+		t.Errorf("last payment = %s/%s, want failed/rejected_by_issuer", order.LastPaymentStatus, order.LastPaymentStatusDetail)
+	}
+}
+
 func TestGetPointsOrderInvalidAmount(t *testing.T) {
 	client, _ := newServer(t, http.StatusOK, `{"id":"ORD123","total_amount":"12.345"}`)
 

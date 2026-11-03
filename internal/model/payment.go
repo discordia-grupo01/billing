@@ -37,6 +37,9 @@ const (
 
 	OrderDetailExpired           = "expired"
 	OrderDetailPartiallyRefunded = "partially_refunded"
+
+	// Status of a payment attempt inside an order.
+	OrderPaymentStatusFailed = "failed"
 )
 
 type PointsOrder struct {
@@ -47,6 +50,11 @@ type PointsOrder struct {
 	AmountCents       int64
 	// Only returned on creation.
 	CheckoutURL string
+	// The latest payment attempt, empty if the buyer hasn't tried to pay.
+	// A rejected card leaves the order open (the buyer can try another one),
+	// so only this tells that the attempt failed.
+	LastPaymentStatus       string
+	LastPaymentStatusDetail string
 }
 
 type SubscriptionRequest struct {

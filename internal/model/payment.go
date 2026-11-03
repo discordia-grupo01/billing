@@ -24,8 +24,12 @@ type PointsOrderRequest struct {
 }
 
 type PointsOrder struct {
-	ID          string
-	Status      string
+	ID                string
+	Status            string
+	StatusDetail      string
+	ExternalReference string
+	AmountCents       int64
+	// Only returned on creation.
 	CheckoutURL string
 }
 
@@ -52,4 +56,14 @@ type Subscription struct {
 	// InitPoint is where the user goes to authorize the subscription; only
 	// returned on creation.
 	InitPoint string
+}
+
+// Payment is a single MP payment. Subscription charges reach us as payment
+// notifications too, e.g. when one is refunded or charged back.
+type Payment struct {
+	ID                string
+	Status            string
+	StatusDetail      string
+	ExternalReference string
+	AmountCents       int64
 }

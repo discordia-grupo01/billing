@@ -256,6 +256,18 @@ func TestReadsMapNotFound(t *testing.T) {
 	}
 }
 
+// What the Orders API answers for an id like the "12345" of the panel's
+// simulated notifications.
+func TestInvalidPathParamIsNotFound(t *testing.T) {
+	client, _ := newServer(t, http.StatusBadRequest,
+		`{"errors":[{"code":"invalid_path_param","message":"path param order id is invalid"}]}`)
+
+	_, err := client.GetPointsOrder(context.Background(), "12345")
+	if !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("expected service.ErrNotFound, got %v", err)
+	}
+}
+
 func TestReadsOtherErrorsAreNotNotFound(t *testing.T) {
 	client, _ := newServer(t, http.StatusBadRequest, `{"message":"bad","status":400}`)
 

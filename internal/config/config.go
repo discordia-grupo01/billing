@@ -34,6 +34,10 @@ type Config struct {
 	// Public base URL of the web client. MP sends the buyer back to
 	// <base>/billing/return after paying; it can't be localhost.
 	CheckoutReturnURL string
+
+	// Mounts /dev/billing/simulate-*, which fake renewals and expiries.
+	// Never in production.
+	DevTools bool
 }
 
 func Load() (Config, error) {
@@ -58,6 +62,8 @@ func Load() (Config, error) {
 		MPWebhookSecret:   os.Getenv("MP_WEBHOOK_SECRET"),
 		MPTestPayerEmail:  os.Getenv("MP_TEST_PAYER_EMAIL"),
 		CheckoutReturnURL: strings.TrimRight(os.Getenv("CHECKOUT_RETURN_URL"), "/"),
+
+		DevTools: os.Getenv("BILLING_DEV_TOOLS") == "true",
 	}
 
 	var missing []string
@@ -80,6 +86,10 @@ func Load() (Config, error) {
 	if len(missing) > 0 {
 		sort.Strings(missing)
 		return Config{}, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
+	}
+
+	if c.DevTools && c.IsProduction() {
+		return Config{}, fmt.Errorf("BILLING_DEV_TOOLS can't be enabled in production: it lets anyone renew or expire Premium")
 	}
 
 	return c, nil

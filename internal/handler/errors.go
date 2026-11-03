@@ -18,6 +18,7 @@ const (
 	CodePayerEmailRequired   = "PAYER_EMAIL_REQUIRED"
 	CodeAlreadySubscribed    = "ALREADY_SUBSCRIBED"
 	CodeNoLiveSubscription   = "NO_LIVE_SUBSCRIPTION"
+	CodeNoActivePremium      = "NO_ACTIVE_PREMIUM"
 	CodeInternalError        = "INTERNAL_ERROR"
 	CodeInvalidSignature     = "INVALID_SIGNATURE"
 	invalidRequestMessage    = "La solicitud no es válida"
@@ -27,7 +28,8 @@ const (
 	unknownPackageMessage    = "El paquete de puntos no existe"
 	payerEmailMessage        = "Falta el email del pagador"
 	alreadySubscribedMessage = "Ya tenés una suscripción a Premium activa"
-	noSubscriptionMessage    = "No tenés una suscripción a Premium para cancelar"
+	noSubscriptionMessage    = "No tenés una suscripción a Premium activa"
+	noActivePremiumMessage   = "No tenés Premium activo"
 )
 
 type errorBody struct {
@@ -55,6 +57,8 @@ func writeServiceError(c *gin.Context, log *slog.Logger, err error) {
 		writeError(c, http.StatusConflict, CodeAlreadySubscribed, alreadySubscribedMessage)
 	case errors.Is(err, service.ErrNoLiveSubscription):
 		writeError(c, http.StatusConflict, CodeNoLiveSubscription, noSubscriptionMessage)
+	case errors.Is(err, service.ErrNoActivePremium):
+		writeError(c, http.StatusConflict, CodeNoActivePremium, noActivePremiumMessage)
 	default:
 		log.Error("request failed", "method", c.Request.Method, "path", c.FullPath(), "error", err)
 		writeError(c, http.StatusInternalServerError, CodeInternalError, internalErrorMessage)

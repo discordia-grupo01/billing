@@ -409,3 +409,35 @@ func TestGetPremiumForNewUser(t *testing.T) {
 		t.Errorf("GetPremium = %+v, %v", p, err)
 	}
 }
+
+func TestEndPremiumPeriod(t *testing.T) {
+	repo, pool := newPremiumRepo(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	s := newSubscription(t, repo, userID, model.SubscriptionStatusAuthorized)
+	if _, err := repo.ApplyCharge(ctx, approvedCharge(s.MPPreapprovalID, "ap1", time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+
+	ended, err := repo.EndPremiumPeriod(ctx, userID)
+	if err != nil || !ended {
+		t.Fatalf("EndPremiumPeriod = %v, %v; want true", ended, err)
+	}
+	if p, _ := repo.GetPremium(ctx, userID); p.Active(time.Now()) {
+		t.Errorf("Premium should be over: until %v", p.PremiumUntil)
+	}
+	// The expiry job picks it up and publishes active=false.
+	if n, err := repo.ExpireDue(ctx, 10); err != nil || n != 1 {
+		t.Fatalf("ExpireDue = %d, %v; want 1", n, err)
+	}
+	if evts := premiumEvents(t, pool, userID); evts[len(evts)-1].Active {
+		t.Errorf("last event should say active=false: %+v", evts[len(evts)-1])
+	}
+
+	if ended, err := repo.EndPremiumPeriod(ctx, userID); err != nil || ended {
+		t.Errorf("second EndPremiumPeriod = %v, %v; want false", ended, err)
+	}
+	if ended, err := repo.EndPremiumPeriod(ctx, uuid.New()); err != nil || ended {
+		t.Errorf("EndPremiumPeriod for a user without Premium = %v, %v; want false", ended, err)
+	}
+}

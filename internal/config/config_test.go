@@ -93,3 +93,17 @@ func TestPostgresDSN(t *testing.T) {
 		t.Errorf("PostgresDSN() = %q, want %q", got, want)
 	}
 }
+
+func TestDevTools(t *testing.T) {
+	setRequired(t)
+	t.Setenv("BILLING_DEV_TOOLS", "true")
+	c, err := Load()
+	if err != nil || !c.DevTools {
+		t.Fatalf("Load() = %+v, %v; want DevTools on", c.DevTools, err)
+	}
+
+	t.Setenv("ENVIRONMENT", "production")
+	if _, err := Load(); err == nil {
+		t.Error("dev tools must be refused in production")
+	}
+}

@@ -29,9 +29,10 @@ const (
 	// Points are a digital good; MP uses the category for fraud prevention.
 	pointsCategoryID = "virtual_goods"
 	// Page size for the authorized payments search, and a cap on pages so a
-	// misbehaving API can't keep us looping.
-	chargesPageSize = 50
-	chargesMaxPages = 20
+	// misbehaving API can't keep us looping. MP answers "Invalid value for
+	// limit" to 50 on this search (its own default is 12), so pages are small.
+	chargesPageSize = 10
+	chargesMaxPages = 100
 )
 
 // Client adapts the Mercado Pago SDK to the PaymentGateway port. API errors

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -278,6 +279,34 @@ func TestReversePurchaseRejectsUnpaid(t *testing.T) {
 	}
 	if _, err := repo.ReversePurchase(ctx, uuid.New(), model.LedgerReasonRefund); !errors.Is(err, repository.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestListPendingPurchases(t *testing.T) {
+	repo, pool := newPointsRepo(t)
+	ctx := context.Background()
+	userID := uuid.New()
+
+	old := newOrderedPurchase(t, repo, userID, 100)
+	older := newOrderedPurchase(t, repo, userID, 100)
+	paid := newPaidPurchase(t, repo, userID, 100)
+	recent := newOrderedPurchase(t, repo, userID, 100)
+	for id, age := range map[uuid.UUID]string{old.ID: "1 hour", older.ID: "2 hours", paid.ID: "3 hours"} {
+		if _, err := pool.Exec(ctx, `UPDATE point_purchases SET created_at = now() - $2::interval WHERE id = $1`, id, age); err != nil {
+			t.Fatalf("age purchase: %v", err)
+		}
+	}
+
+	got, err := repo.ListPendingPurchases(ctx, time.Now().Add(-30*time.Minute), 10)
+	if err != nil {
+		t.Fatalf("ListPendingPurchases: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != older.ID || got[1].ID != old.ID {
+		t.Fatalf("want [older, old] (not paid, not recent %s), got %+v", recent.ID, got)
+	}
+
+	if got, _ := repo.ListPendingPurchases(ctx, time.Now().Add(-30*time.Minute), 1); len(got) != 1 {
+		t.Errorf("limit not applied: %d purchases", len(got))
 	}
 }
 

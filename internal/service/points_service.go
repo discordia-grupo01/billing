@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/url"
 	"slices"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -24,6 +25,15 @@ var (
 const (
 	defaultListLimit = 20
 	maxListLimit     = 100
+
+	// The reconciliation job leaves fresh purchases alone so it doesn't race
+	// the checkout, and gives up on the ones nobody paid after a day. If MP
+	// accredits one later anyway, the webhook still credits it.
+	pendingCheckAfter   = 10 * time.Minute
+	pendingAbandonAfter = 24 * time.Hour
+	pendingBatch        = 200
+	detailAbandoned     = "abandoned"
+	detailNoOrder       = "order_not_created"
 )
 
 type PointsPackage struct {
@@ -62,6 +72,7 @@ type PointsStore interface {
 	SetOrderID(ctx context.Context, purchaseID uuid.UUID, orderID string) error
 	GetPurchase(ctx context.Context, id uuid.UUID) (model.PointPurchase, error)
 	ListPurchases(ctx context.Context, userID uuid.UUID, limit int) ([]model.PointPurchase, error)
+	ListPendingPurchases(ctx context.Context, createdBefore time.Time, limit int) ([]model.PointPurchase, error)
 	MarkUnpaid(ctx context.Context, purchaseID uuid.UUID, status model.PurchaseStatus, detail string) (bool, error)
 	CreditPurchase(ctx context.Context, purchaseID uuid.UUID, statusDetail string) (bool, error)
 	ReversePurchase(ctx context.Context, purchaseID uuid.UUID, reason model.LedgerReason) (int64, error)
@@ -94,13 +105,14 @@ type PointsService struct {
 	urls    ReturnURLs
 	log     *slog.Logger
 	newID   func() uuid.UUID
+	now     func() time.Time
 }
 
 func NewPointsService(store PointsStore, gateway PaymentGateway, urls ReturnURLs, logger *slog.Logger) *PointsService {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &PointsService{store: store, gateway: gateway, urls: urls, log: logger, newID: uuid.New}
+	return &PointsService{store: store, gateway: gateway, urls: urls, log: logger, newID: uuid.New, now: time.Now}
 }
 
 func (s *PointsService) Packages() []PointsPackage {
@@ -220,6 +232,41 @@ func (s *PointsService) ProcessOrderNotification(ctx context.Context, orderID st
 		// created, processing, action_required, in_review: still in progress.
 	}
 	return err
+}
+
+// ReconcilePending asks MP about purchases that are still pending, in case
+// their notification was lost, and expires the ones nobody paid. Errors on
+// one purchase are logged and don't stop the rest; it returns how many
+// purchases it looked at.
+func (s *PointsService) ReconcilePending(ctx context.Context) (int, error) {
+	now := s.now()
+	purchases, err := s.store.ListPendingPurchases(ctx, now.Add(-pendingCheckAfter), pendingBatch)
+	if err != nil {
+		return 0, err
+	}
+	for _, p := range purchases {
+		log := s.log.With("purchase_id", p.ID, "order_id", p.MPOrderID)
+		if p.MPOrderID == "" {
+			// The order was never created, so there is nothing to pay. If it
+			// was created but saving its id failed, its webhook links it.
+			if _, err := s.store.MarkUnpaid(ctx, p.ID, model.PurchaseStatusExpired, detailNoOrder); err != nil {
+				log.Error("could not expire purchase without order", "error", err)
+			}
+			continue
+		}
+		if err := s.ProcessOrderNotification(ctx, p.MPOrderID); err != nil {
+			log.Error("could not reconcile purchase", "error", err)
+			continue
+		}
+		if p.CreatedAt.Before(now.Add(-pendingAbandonAfter)) {
+			// MarkUnpaid only moves pending purchases, so one that MP just
+			// accredited stays paid.
+			if _, err := s.store.MarkUnpaid(ctx, p.ID, model.PurchaseStatusExpired, detailAbandoned); err != nil {
+				log.Error("could not expire abandoned purchase", "error", err)
+			}
+		}
+	}
+	return len(purchases), nil
 }
 
 // linkOrder checks that the order belongs to the purchase. If saving the

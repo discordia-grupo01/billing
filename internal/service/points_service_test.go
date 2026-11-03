@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -409,4 +410,123 @@ func TestNewPointsServiceDefaultLogger(t *testing.T) {
 	if s := NewPointsService(newFakePointsStore(), &fakeGateway{}, ReturnURLs{}, nil); s.log == nil {
 		t.Error("logger should default to slog.Default")
 	}
+}
+
+var reconcileNow = time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+
+// pendingPurchase stores a pending purchase created `age` before reconcileNow.
+func pendingPurchase(store *fakePointsStore, orderID string, age time.Duration) {
+	store.purchases[purchaseID] = model.PointPurchase{
+		ID: purchaseID, UserID: userID, Points: seedPoints, AmountCents: seedAmount,
+		MPOrderID: orderID, Status: model.PurchaseStatusPending, CreatedAt: reconcileNow.Add(-age),
+	}
+}
+
+func newReconcileService(store *fakePointsStore, gw *fakeGateway) *PointsService {
+	s := newPointsService(store, gw)
+	s.now = func() time.Time { return reconcileNow }
+	return s
+}
+
+func TestReconcilePending(t *testing.T) {
+	tests := map[string]struct {
+		orderID    string
+		age        time.Duration
+		order      model.PointsOrder
+		wantStatus model.PurchaseStatus
+		wantDetail string
+		wantSeen   int
+	}{
+		"too recent to check": {
+			orderID: "ORD1", age: 5 * time.Minute, order: orderWith(model.OrderStatusProcessed, "accredited"),
+			wantStatus: model.PurchaseStatusPending, wantSeen: 0,
+		},
+		"paid but the webhook was lost": {
+			orderID: "ORD1", age: time.Hour, order: orderWith(model.OrderStatusProcessed, "accredited"),
+			wantStatus: model.PurchaseStatusPaid, wantDetail: "", wantSeen: 1,
+		},
+		"still waiting for the buyer": {
+			orderID: "ORD1", age: time.Hour, order: orderWith(model.OrderStatusActionRequired, ""),
+			wantStatus: model.PurchaseStatusPending, wantSeen: 1,
+		},
+		"abandoned for a day": {
+			orderID: "ORD1", age: 25 * time.Hour, order: orderWith(model.OrderStatusActionRequired, ""),
+			wantStatus: model.PurchaseStatusExpired, wantDetail: detailAbandoned, wantSeen: 1,
+		},
+		"paid a day later": {
+			orderID: "ORD1", age: 25 * time.Hour, order: orderWith(model.OrderStatusProcessed, "accredited"),
+			wantStatus: model.PurchaseStatusPaid, wantSeen: 1,
+		},
+		"order never created": {
+			orderID: "", age: time.Hour,
+			wantStatus: model.PurchaseStatusExpired, wantDetail: detailNoOrder, wantSeen: 1,
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			store := newFakePointsStore()
+			pendingPurchase(store, tc.orderID, tc.age)
+			s := newReconcileService(store, &fakeGateway{order: tc.order})
+
+			seen, err := s.ReconcilePending(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if seen != tc.wantSeen {
+				t.Errorf("looked at %d purchases, want %d", seen, tc.wantSeen)
+			}
+			p := store.purchases[purchaseID]
+			if p.Status != tc.wantStatus || (tc.wantDetail != "" && p.StatusDetail != tc.wantDetail) {
+				t.Errorf("purchase = %s/%q, want %s/%q", p.Status, p.StatusDetail, tc.wantStatus, tc.wantDetail)
+			}
+		})
+	}
+}
+
+func TestReconcilePendingKeepsGoingAfterErrors(t *testing.T) {
+	t.Run("MP fails", func(t *testing.T) {
+		store := newFakePointsStore()
+		pendingPurchase(store, "ORD1", 25*time.Hour)
+		s := newReconcileService(store, &fakeGateway{getErr: errBoom})
+
+		if _, err := s.ReconcilePending(context.Background()); err != nil {
+			t.Fatalf("per-purchase errors must not fail the run: %v", err)
+		}
+		if p := store.purchases[purchaseID]; p.Status != model.PurchaseStatusPending {
+			t.Errorf("a purchase MP couldn't confirm must not be expired: %s", p.Status)
+		}
+	})
+	for name, orderID := range map[string]string{"expire abandoned": "ORD1", "expire without order": ""} {
+		t.Run(name, func(t *testing.T) {
+			store := newFakePointsStore()
+			pendingPurchase(store, orderID, 25*time.Hour)
+			s := newReconcileService(store, &fakeGateway{order: orderWith(model.OrderStatusActionRequired, "")})
+			s.store = &failOnStep{fakePointsStore: store, step: "MarkUnpaid"}
+
+			if _, err := s.ReconcilePending(context.Background()); err != nil {
+				t.Errorf("per-purchase errors must not fail the run: %v", err)
+			}
+		})
+	}
+}
+
+func TestReconcilePendingListError(t *testing.T) {
+	store := newFakePointsStore()
+	store.err = errBoom
+	if _, err := newReconcileService(store, &fakeGateway{}).ReconcilePending(context.Background()); !errors.Is(err, errBoom) {
+		t.Errorf("err = %v, want errBoom", err)
+	}
+}
+
+// failOnStep makes one store method fail and lets the rest work.
+type failOnStep struct {
+	*fakePointsStore
+	step string
+}
+
+func (f *failOnStep) MarkUnpaid(ctx context.Context, id uuid.UUID, status model.PurchaseStatus, detail string) (bool, error) {
+	if f.step == "MarkUnpaid" {
+		return false, errBoom
+	}
+	return f.fakePointsStore.MarkUnpaid(ctx, id, status, detail)
 }

@@ -701,3 +701,120 @@ func TestNewPremiumServiceDefaultLogger(t *testing.T) {
 		t.Error("logger should default to slog.Default")
 	}
 }
+
+func TestExpireDueDrainsBatches(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	store.expireBatches = []int{expireBatch, expireBatch, 3}
+	s := newPremiumService(store, &fakeGateway{}, PremiumConfig{})
+
+	n, err := s.ExpireDue(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 2*expireBatch+3 {
+		t.Errorf("expired %d, want %d", n, 2*expireBatch+3)
+	}
+	if len(store.expireLimits) != 3 {
+		t.Errorf("ran %d batches, want 3 (stop at the first partial one)", len(store.expireLimits))
+	}
+}
+
+func TestExpireDueError(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	store.failOn = map[string]error{"ExpireDue": errBoom}
+	if _, err := newPremiumService(store, &fakeGateway{}, PremiumConfig{}).ExpireDue(context.Background()); !errors.Is(err, errBoom) {
+		t.Errorf("err = %v, want errBoom", err)
+	}
+}
+
+func TestReconcileSubscriptionsActivatesWithoutWebhooks(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	seedSub(store, "PRE1", model.SubscriptionStatusPending)
+	gw := &fakeGateway{
+		sub:     mpSub("PRE1", model.SubscriptionStatusAuthorized),
+		charges: []model.Charge{approvedCharge("AP1", premiumNow)},
+	}
+	s := newPremiumService(store, gw, PremiumConfig{})
+
+	n, err := s.ReconcileSubscriptions(context.Background())
+	if err != nil || n != 1 {
+		t.Fatalf("ReconcileSubscriptions = %d, %v", n, err)
+	}
+	if store.subs[0].MPStatus != model.SubscriptionStatusAuthorized {
+		t.Errorf("status = %s, want authorized", store.subs[0].MPStatus)
+	}
+	if p := store.premium[userID]; !p.Active(premiumNow) || !p.Renews {
+		t.Errorf("Premium should be active and renewing: %+v", p)
+	}
+}
+
+func TestReconcileSubscriptionsCancelsAbandonedCheckouts(t *testing.T) {
+	tests := map[string]struct {
+		age        time.Duration
+		mpStatus   string
+		wantCancel bool
+	}{
+		"pending for 8 days":              {8 * 24 * time.Hour, model.SubscriptionStatusPending, true},
+		"pending for 2 days":              {2 * 24 * time.Hour, model.SubscriptionStatusPending, false},
+		"authorized during the reconcile": {8 * 24 * time.Hour, model.SubscriptionStatusAuthorized, false},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			store := newFakePremiumStore(premiumNow)
+			seedSub(store, "PRE1", model.SubscriptionStatusPending)
+			store.subs[0].CreatedAt = premiumNow.Add(-tc.age)
+			gw := &fakeGateway{sub: mpSub("PRE1", tc.mpStatus)}
+			s := newPremiumService(store, gw, PremiumConfig{})
+
+			if _, err := s.ReconcileSubscriptions(context.Background()); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cancelled := slices.Contains(gw.cancelled, "PRE1"); cancelled != tc.wantCancel {
+				t.Fatalf("cancelled = %v, want %v", cancelled, tc.wantCancel)
+			}
+			if tc.wantCancel && store.subs[0].MPStatus != model.SubscriptionStatusCancelled {
+				t.Errorf("our record should be cancelled too: %s", store.subs[0].MPStatus)
+			}
+		})
+	}
+}
+
+func TestReconcileSubscriptionsKeepsGoingAfterErrors(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	// PRE0 is unknown to MP, so its reconcile fails; PRE1 must still be done.
+	seedSub(store, "PRE0", model.SubscriptionStatusPending)
+	seedSub(store, "PRE1", model.SubscriptionStatusPending)
+	gw := &fakeGateway{sub: mpSub("PRE1", model.SubscriptionStatusAuthorized)}
+	s := newPremiumService(store, gw, PremiumConfig{})
+
+	n, err := s.ReconcileSubscriptions(context.Background())
+	if err != nil || n != 2 {
+		t.Fatalf("ReconcileSubscriptions = %d, %v", n, err)
+	}
+	if store.subs[1].MPStatus != model.SubscriptionStatusAuthorized {
+		t.Error("PRE1 should be reconciled despite PRE0 failing")
+	}
+}
+
+func TestReconcileSubscriptionsCancelError(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	seedSub(store, "PRE1", model.SubscriptionStatusPending)
+	store.subs[0].CreatedAt = premiumNow.AddDate(0, 0, -8)
+	gw := &fakeGateway{sub: mpSub("PRE1", model.SubscriptionStatusPending), failOn: map[string]error{"CancelSubscription": errBoom}}
+	s := newPremiumService(store, gw, PremiumConfig{})
+
+	if _, err := s.ReconcileSubscriptions(context.Background()); err != nil {
+		t.Errorf("a failed cancel must not fail the run: %v", err)
+	}
+	if store.subs[0].MPStatus != model.SubscriptionStatusPending {
+		t.Errorf("status = %s, want pending until MP confirms the cancel", store.subs[0].MPStatus)
+	}
+}
+
+func TestReconcileSubscriptionsListError(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	store.failOn = map[string]error{"ListSubscriptionsToReconcile": errBoom}
+	if _, err := newPremiumService(store, &fakeGateway{}, PremiumConfig{}).ReconcileSubscriptions(context.Background()); !errors.Is(err, errBoom) {
+		t.Errorf("err = %v, want errBoom", err)
+	}
+}

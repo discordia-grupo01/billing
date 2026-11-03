@@ -33,10 +33,26 @@ type PointsPackage struct {
 	Description string
 }
 
+// pointsPackages is the only place to change what is sold, as (points, price
+// in ARS). Everything else, including the text Mercado Pago shows, comes from
+// these values. Purchases store their own points and amount, so changes only
+// affect new purchases.
 var pointsPackages = []PointsPackage{
-	{ID: "points_100", Points: 100, AmountCents: 1_000_00, Title: "100 puntos", Description: "Paquete de 100 puntos de Discordia"},
-	{ID: "points_550", Points: 550, AmountCents: 5_000_00, Title: "550 puntos", Description: "Paquete de 550 puntos de Discordia"},
-	{ID: "points_1200", Points: 1200, AmountCents: 10_000_00, Title: "1200 puntos", Description: "Paquete de 1200 puntos de Discordia"},
+	newPointsPackage(100, 1000),
+	newPointsPackage(550, 5000),
+	newPointsPackage(1200, 10000),
+}
+
+// newPointsPackage takes the price in whole pesos; amounts are kept in cents
+// everywhere else.
+func newPointsPackage(points int, pricePesos int64) PointsPackage {
+	return PointsPackage{
+		ID:          fmt.Sprintf("points_%d", points),
+		Points:      points,
+		AmountCents: pricePesos * 100,
+		Title:       fmt.Sprintf("%d puntos", points),
+		Description: fmt.Sprintf("Paquete de %d puntos de Discordia", points),
+	}
 }
 
 // PointsStore is the slice of the points repository this service needs.

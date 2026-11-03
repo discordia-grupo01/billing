@@ -28,21 +28,26 @@ func newPointsService(store PointsStore, gw *fakeGateway) *PointsService {
 	return s
 }
 
-// seedPurchase stores a 550 points purchase linked to order ORD1.
+const (
+	seedPoints = 550
+	seedAmount = 5_000_00
+)
+
+// seedPurchase stores a purchase linked to order ORD1.
 func seedPurchase(store *fakePointsStore, status model.PurchaseStatus) {
 	store.purchases[purchaseID] = model.PointPurchase{
-		ID: purchaseID, UserID: userID, PackageID: "points_550", Points: 550,
-		AmountCents: 5_000_00, MPOrderID: "ORD1", Status: status,
+		ID: purchaseID, UserID: userID, PackageID: "points_x", Points: seedPoints,
+		AmountCents: seedAmount, MPOrderID: "ORD1", Status: status,
 	}
 	if status == model.PurchaseStatusPaid {
-		store.balances[userID] = 550
+		store.balances[userID] = seedPoints
 	}
 }
 
 func orderWith(status, detail string) model.PointsOrder {
 	return model.PointsOrder{
 		ID: "ORD1", Status: status, StatusDetail: detail,
-		ExternalReference: purchaseID.String(), AmountCents: 5_000_00,
+		ExternalReference: purchaseID.String(), AmountCents: seedAmount,
 	}
 }
 
@@ -50,19 +55,31 @@ func TestPackages(t *testing.T) {
 	s := newPointsService(newFakePointsStore(), &fakeGateway{})
 
 	pkgs := s.Packages()
-	want := map[string][2]int64{"points_100": {100, 1_000_00}, "points_550": {550, 5_000_00}, "points_1200": {1200, 10_000_00}}
-	if len(pkgs) != len(want) {
-		t.Fatalf("got %d packages, want %d", len(pkgs), len(want))
+	if len(pkgs) == 0 {
+		t.Fatal("catalog is empty")
 	}
+	seen := map[string]bool{}
 	for _, p := range pkgs {
-		if w, ok := want[p.ID]; !ok || int64(p.Points) != w[0] || p.AmountCents != w[1] {
-			t.Errorf("unexpected package %+v", p)
+		if p.Points <= 0 || p.AmountCents <= 0 {
+			t.Errorf("package %s must have positive points and amount: %+v", p.ID, p)
 		}
+		if seen[p.ID] {
+			t.Errorf("duplicate package id %s", p.ID)
+		}
+		seen[p.ID] = true
 	}
 
-	pkgs[0].AmountCents = 1
-	if s.Packages()[0].AmountCents == 1 {
+	pkgs[0].AmountCents = -1
+	if s.Packages()[0].AmountCents == -1 {
 		t.Error("Packages must return a copy")
+	}
+}
+
+func TestNewPointsPackage(t *testing.T) {
+	p := newPointsPackage(750, 6500)
+	if p.ID != "points_750" || p.Points != 750 || p.AmountCents != 6_500_00 ||
+		p.Title != "750 puntos" || p.Description != "Paquete de 750 puntos de Discordia" {
+		t.Errorf("unexpected package: %+v", p)
 	}
 }
 
@@ -71,7 +88,8 @@ func TestStartCheckout(t *testing.T) {
 	gw := &fakeGateway{order: model.PointsOrder{ID: "ORD1", Status: "created", CheckoutURL: "https://mp.test/checkout"}}
 	s := newPointsService(store, gw)
 
-	got, err := s.StartCheckout(context.Background(), userID, "points_550",
+	pkg := pointsPackages[len(pointsPackages)-1]
+	got, err := s.StartCheckout(context.Background(), userID, pkg.ID,
 		CheckoutPayer{Email: "ana@test.com", FirstName: "Ana", LastName: "Pérez"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -81,7 +99,7 @@ func TestStartCheckout(t *testing.T) {
 		t.Errorf("unexpected checkout: %+v", got)
 	}
 	p := store.purchases[purchaseID]
-	if p.UserID != userID || p.Points != 550 || p.AmountCents != 5_000_00 || p.MPOrderID != "ORD1" ||
+	if p.UserID != userID || p.PackageID != pkg.ID || p.Points != pkg.Points || p.AmountCents != pkg.AmountCents || p.MPOrderID != "ORD1" ||
 		p.Status != model.PurchaseStatusPending {
 		t.Errorf("unexpected purchase: %+v", p)
 	}
@@ -89,7 +107,7 @@ func TestStartCheckout(t *testing.T) {
 	if req.IdempotencyKey != purchaseID.String() || req.ExternalReference != purchaseID.String() {
 		t.Errorf("purchase id must be the idempotency key and external reference: %+v", req)
 	}
-	if req.ItemID != "points_550" || req.AmountCents != 5_000_00 || req.Title != "550 puntos" ||
+	if req.ItemID != pkg.ID || req.AmountCents != pkg.AmountCents || req.Title != pkg.Title || req.Description != pkg.Description ||
 		req.PayerEmail != "ana@test.com" || req.PayerFirstName != "Ana" || req.PayerLastName != "Pérez" {
 		t.Errorf("unexpected order request: %+v", req)
 	}
@@ -102,7 +120,7 @@ func TestStartCheckoutUnknownPackage(t *testing.T) {
 	store := newFakePointsStore()
 	s := newPointsService(store, &fakeGateway{})
 
-	_, err := s.StartCheckout(context.Background(), userID, "points_999", CheckoutPayer{})
+	_, err := s.StartCheckout(context.Background(), userID, "points_does_not_exist", CheckoutPayer{})
 	if !errors.Is(err, ErrUnknownPackage) {
 		t.Fatalf("err = %v, want ErrUnknownPackage", err)
 	}
@@ -115,7 +133,7 @@ func TestStartCheckoutGatewayFailureLeavesPendingPurchase(t *testing.T) {
 	store := newFakePointsStore()
 	s := newPointsService(store, &fakeGateway{createErr: errBoom})
 
-	if _, err := s.StartCheckout(context.Background(), userID, "points_100", CheckoutPayer{}); !errors.Is(err, errBoom) {
+	if _, err := s.StartCheckout(context.Background(), userID, pointsPackages[0].ID, CheckoutPayer{}); !errors.Is(err, errBoom) {
 		t.Fatalf("err = %v, want errBoom", err)
 	}
 	p := store.purchases[purchaseID]
@@ -130,7 +148,7 @@ func TestStartCheckoutStoreFailures(t *testing.T) {
 	gw := &fakeGateway{}
 	s := newPointsService(store, gw)
 
-	if _, err := s.StartCheckout(context.Background(), userID, "points_100", CheckoutPayer{}); !errors.Is(err, errBoom) {
+	if _, err := s.StartCheckout(context.Background(), userID, pointsPackages[0].ID, CheckoutPayer{}); !errors.Is(err, errBoom) {
 		t.Fatalf("CreatePurchase failure: err = %v", err)
 	}
 	if gw.orderReq.IdempotencyKey != "" {
@@ -140,7 +158,7 @@ func TestStartCheckoutStoreFailures(t *testing.T) {
 	// SetOrderID fails after the order was created.
 	store = newFakePointsStore()
 	s = newPointsService(&failOnSetOrderID{store}, &fakeGateway{order: model.PointsOrder{ID: "ORD1"}})
-	if _, err := s.StartCheckout(context.Background(), userID, "points_100", CheckoutPayer{}); !errors.Is(err, errBoom) {
+	if _, err := s.StartCheckout(context.Background(), userID, pointsPackages[0].ID, CheckoutPayer{}); !errors.Is(err, errBoom) {
 		t.Fatalf("SetOrderID failure: err = %v", err)
 	}
 }
@@ -159,15 +177,15 @@ func TestProcessOrderNotification(t *testing.T) {
 		wantDetail  string
 	}{
 		{"accredited credits the points", model.PurchaseStatusPending,
-			orderWith("processed", "accredited"), model.PurchaseStatusPaid, 550, "accredited"},
+			orderWith("processed", "accredited"), model.PurchaseStatusPaid, seedPoints, "accredited"},
 		{"repeated accredited does not credit twice", model.PurchaseStatusPaid,
-			orderWith("processed", "accredited"), model.PurchaseStatusPaid, 550, ""},
+			orderWith("processed", "accredited"), model.PurchaseStatusPaid, seedPoints, ""},
 		{"late accredited credits a failed purchase", model.PurchaseStatusFailed,
-			orderWith("processed", "accredited"), model.PurchaseStatusPaid, 550, "accredited"},
+			orderWith("processed", "accredited"), model.PurchaseStatusPaid, seedPoints, "accredited"},
 		{"partial refund keeps the points", model.PurchaseStatusPaid,
-			orderWith("processed", "partially_refunded"), model.PurchaseStatusPaid, 550, ""},
+			orderWith("processed", "partially_refunded"), model.PurchaseStatusPaid, seedPoints, ""},
 		{"partial refund of a missed payment credits it", model.PurchaseStatusPending,
-			orderWith("processed", "partially_refunded"), model.PurchaseStatusPaid, 550, "partially_refunded"},
+			orderWith("processed", "partially_refunded"), model.PurchaseStatusPaid, seedPoints, "partially_refunded"},
 		{"failed marks it failed", model.PurchaseStatusPending,
 			orderWith("failed", "rejected_by_issuer"), model.PurchaseStatusFailed, 0, "rejected_by_issuer"},
 		{"failed by expiry marks it expired", model.PurchaseStatusPending,
@@ -175,7 +193,7 @@ func TestProcessOrderNotification(t *testing.T) {
 		{"canceled marks it expired", model.PurchaseStatusPending,
 			orderWith("canceled", "expired"), model.PurchaseStatusExpired, 0, "expired"},
 		{"late failed never undoes a payment", model.PurchaseStatusPaid,
-			orderWith("failed", "rejected_by_issuer"), model.PurchaseStatusPaid, 550, ""},
+			orderWith("failed", "rejected_by_issuer"), model.PurchaseStatusPaid, seedPoints, ""},
 		{"refunded takes the points back", model.PurchaseStatusPaid,
 			orderWith("refunded", "refunded"), model.PurchaseStatusRefunded, 0, ""},
 		{"charged back in process takes the points back", model.PurchaseStatusPaid,
@@ -220,7 +238,7 @@ func TestProcessOrderNotificationRefundOfMissedPayment(t *testing.T) {
 	if p := store.purchases[purchaseID]; p.Status != model.PurchaseStatusRefunded {
 		t.Errorf("status = %s, want refunded", p.Status)
 	}
-	if len(store.ledger) != 2 || store.ledger[0].Delta != 550 || store.ledger[1].Delta != -550 {
+	if len(store.ledger) != 2 || store.ledger[0].Delta != seedPoints || store.ledger[1].Delta != -seedPoints {
 		t.Errorf("ledger should show the credit and its reversal: %+v", store.ledger)
 	}
 	if store.balances[userID] != 0 {
@@ -365,7 +383,7 @@ func TestQueries(t *testing.T) {
 	s := newPointsService(store, &fakeGateway{})
 	ctx := context.Background()
 
-	if b, err := s.Balance(ctx, userID); err != nil || b != 550 {
+	if b, err := s.Balance(ctx, userID); err != nil || b != seedPoints {
 		t.Errorf("Balance = %d, %v", b, err)
 	}
 	for limit, want := range map[int]int{0: defaultListLimit, -5: defaultListLimit, 10: 10, 1000: maxListLimit} {

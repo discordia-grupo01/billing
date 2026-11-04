@@ -15,6 +15,8 @@ docker compose up -d db
 make run
 ```
 
+Para probar pagos, tarjetas de prueba y simuladores: [`docs/testing.md`](docs/testing.md).
+
 ## Variables de entorno
 | Variable | Default | Descripcion |
 |---|---|---|

@@ -298,6 +298,32 @@ func (r *PremiumRepository) ExpireDue(ctx context.Context, limit int) (int, erro
 	return expired, nil
 }
 
+// RepublishAll emits a new billing.premium_updated with the current state of
+// every user in premium_status, for consumers whose queue didn't exist when the
+// original events went out. It bumps each version, so a consumer that already
+// has the user applies it too, with the same result. Each user has its own
+// transaction: after a failure, running it again is safe. Returns how many
+// events were written.
+func (r *PremiumRepository) RepublishAll(ctx context.Context) (int, error) {
+	rows, err := r.pool.Query(ctx, `SELECT user_id FROM premium_status ORDER BY user_id`)
+	if err != nil {
+		return 0, fmt.Errorf("repository: list premium users: %w", err)
+	}
+	userIDs, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return 0, fmt.Errorf("repository: list premium users: %w", err)
+	}
+	for i, id := range userIDs {
+		err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+			return emitPremiumUpdated(ctx, tx, id)
+		})
+		if err != nil {
+			return i, fmt.Errorf("repository: republish premium of %s: %w", id, err)
+		}
+	}
+	return len(userIDs), nil
+}
+
 // EndPremiumPeriod moves premium_until a second into the past, as if the
 // paid period had just ended; the expiry job then emits active=false. Only
 // the dev simulator calls it. Returns false if the user had no active

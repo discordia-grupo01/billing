@@ -441,3 +441,71 @@ func TestEndPremiumPeriod(t *testing.T) {
 		t.Errorf("EndPremiumPeriod for a user without Premium = %v, %v; want false", ended, err)
 	}
 }
+
+func TestRepublishAll(t *testing.T) {
+	repo, pool := newPremiumRepo(t)
+	ctx := context.Background()
+
+	paying := uuid.New()
+	s := newSubscription(t, repo, paying, model.SubscriptionStatusAuthorized)
+	if _, err := repo.ApplyCharge(ctx, approvedCharge(s.MPPreapprovalID, "ap1", time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	expired := uuid.New()
+	s = newSubscription(t, repo, expired, model.SubscriptionStatusAuthorized)
+	if _, err := repo.ApplyCharge(ctx, approvedCharge(s.MPPreapprovalID, "ap2", time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE premium_status SET premium_until = now() - interval '1 minute' WHERE user_id = $1`, expired); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := repo.GetPremium(ctx, paying)
+
+	n, err := repo.RepublishAll(ctx)
+	if err != nil || n != 2 {
+		t.Fatalf("RepublishAll = %d, %v; want 2", n, err)
+	}
+
+	evts := premiumEvents(t, pool, paying)
+	last := evts[len(evts)-1]
+	if !last.Active || last.UserID != paying.String() || last.Version != before.Version+1 {
+		t.Errorf("paying user event = %+v, previous version %d", last, before.Version)
+	}
+	if last.PremiumUntil == nil || !last.PremiumUntil.Equal(*before.PremiumUntil) {
+		t.Errorf("premium_until = %v, want %v", last.PremiumUntil, before.PremiumUntil)
+	}
+
+	evts = premiumEvents(t, pool, expired)
+	if evts[len(evts)-1].Active {
+		t.Error("a user whose period passed must be republished as inactive")
+	}
+	if p, _ := repo.GetPremium(ctx, expired); p.ActiveEmitted {
+		t.Error("active_emitted should follow what the event said")
+	}
+	if n, _ := repo.ExpireDue(ctx, 10); n != 0 {
+		t.Errorf("ExpireDue after republishing = %d, want 0: it would emit twice", n)
+	}
+
+	if n, err := repo.RepublishAll(ctx); err != nil || n != 2 {
+		t.Fatalf("second RepublishAll = %d, %v; want 2", n, err)
+	}
+	if p, _ := repo.GetPremium(ctx, paying); p.Version != before.Version+2 {
+		t.Errorf("version after running twice = %d, want %d", p.Version, before.Version+2)
+	}
+}
+
+func TestRepublishAllWithNobody(t *testing.T) {
+	repo, _ := newPremiumRepo(t)
+	if n, err := repo.RepublishAll(context.Background()); err != nil || n != 0 {
+		t.Fatalf("RepublishAll = %d, %v; want 0", n, err)
+	}
+}
+
+func TestRepublishAllDBError(t *testing.T) {
+	repo, pool := newPremiumRepo(t)
+	pool.Close()
+	if _, err := repo.RepublishAll(context.Background()); err == nil {
+		t.Fatal("RepublishAll should fail with a closed pool")
+	}
+}

@@ -65,6 +65,7 @@ go-template/
 - `make test` - corre los tests con cobertura (`go test ./... -cover`).
 - `make build` - compila el binario en `bin/api`.
 - `make migrate` - placeholder, todavia hay que definir la herramienta de migraciones.
+- `make republish-premium` - escribe en el outbox de la base del `.env` un `billing.premium_updated` con el estado actual de cada usuario. Sirve para un consumer cuya cola no existia cuando salieron los eventos. Los publica el relay del billing que este corriendo contra esa base, y se puede repetir sin problema.
 
 ## Tests
 ```bash

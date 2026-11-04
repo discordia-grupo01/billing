@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, develop]
 
 jobs:
   test:
@@ -21,11 +21,19 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
+      rabbitmq:
+        image: rabbitmq:3-alpine
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version-file: go.mod
       - name: Chequeo de formato (gofmt)
         run: |
           UNFORMATTED=$(gofmt -l .)
@@ -37,4 +45,101 @@ jobs:
 
       - run: go build ./...
       - run: go vet ./...
-      - run: go test ./... -cover
+      - name: Tests
+        # -coverpkg mide la cobertura de todo internal/, no solo la del paquete
+        # que tiene el test (mismo criterio que servers e identify-service).
+        env:
+          TEST_DATABASE_URL: postgres://discordia:discordia@localhost:5432/discordia_servicio?sslmode=disable
+          TEST_RABBITMQ_URL: amqp://guest:guest@localhost:5672/
+        # -p 1: los tests de integracion borran y recrean las tablas.
+        run: go test ./... -p 1 -coverpkg=./internal/... -coverprofile=coverage.out
+      - name: Verificar cobertura minima (70%)
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "Cobertura total: ${COVERAGE}%"
+          if awk "BEGIN {exit !($COVERAGE < 70)}"; then
+            echo "::error::Cobertura ${COVERAGE}% por debajo del minimo requerido (70%)"
+            exit 1
+          fi
+
+  # Solo en main: publica la imagen del commit, migra la base de produccion y
+  # despliega en la VM de billing (ver README, seccion Deploy).
+  publish:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Construir y publicar imagen
+        run: |
+          IMAGE="ghcr.io/discordia-grupo01/billing"
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+  # Antes del deploy: si una migracion falla, no se despliega.
+  migrate:
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: migrate-billing
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Aplicar migraciones en produccion
+        env:
+          DATABASE_HOST: ${{ secrets.PROD_DATABASE_HOST }}
+          DATABASE_PORT: ${{ secrets.PROD_DATABASE_PORT }}
+          DATABASE_NAME: ${{ secrets.PROD_DATABASE_NAME }}
+          DATABASE_USER: ${{ secrets.PROD_DATABASE_USER }}
+          DATABASE_PASSWORD: ${{ secrets.PROD_DATABASE_PASSWORD }}
+          DATABASE_SSLMODE: ${{ secrets.PROD_DATABASE_SSLMODE }}
+        run: |
+          if [ -z "$DATABASE_HOST" ] || [ -z "$DATABASE_PASSWORD" ]; then
+            echo "Faltan los secrets PROD_DATABASE_* (ver README, seccion Deploy)" >&2
+            exit 1
+          fi
+          ENCODED=$(jq -rn --arg p "$DATABASE_PASSWORD" '$p|@uri')
+          echo "::add-mask::$ENCODED"
+          DATABASE_PASSWORD="$ENCODED" make -s migrate
+
+  deploy:
+    needs: [publish, migrate]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-billing
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      # El token del job solo vive mientras corre: la VM no guarda credenciales.
+      - name: Deploy a Oracle por SSH
+        uses: appleboy/ssh-action@v1
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ghcr.io/discordia-grupo01/billing:${{ github.sha }}
+        with:
+          host: ${{ secrets.BILLING_VM_HOST }}
+          username: ${{ secrets.BILLING_VM_USER }}
+          key: ${{ secrets.BILLING_VM_SSH_KEY }}
+          envs: GHCR_USER,GHCR_TOKEN,IMAGE
+          script: |
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            status=0
+            ~/deploy.sh "$IMAGE" || status=$?
+            docker logout ghcr.io
+            exit $status

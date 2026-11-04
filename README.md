@@ -83,6 +83,27 @@ Ver openapi.yaml.
 - GET /livez
 - GET /readyz
 
+## Deploy
+Un push a `main`, si pasan los tests, corre tres jobs de `.github/workflows/ci.yml`:
+
+1. `publish`: publica la imagen en `ghcr.io/discordia-grupo01/billing:<sha>`.
+2. `migrate`: aplica las migraciones en produccion. Si fallan, no se despliega.
+3. `deploy`: entra por SSH a la VM y corre `~/deploy.sh`, que levanta el contenedor en el
+   puerto 8080, prueba `/readyz` y, si no responde, vuelve a la imagen anterior.
+
+El puerto 8080 no esta abierto a internet: Kong llega por la IP de Tailscale de la VM. Las
+variables del servicio estan en `~/billing.env` en la VM (ver `.env.example`), con
+`ENVIRONMENT=production` y sin `BILLING_DEV_TOOLS`.
+
+**Secrets de GitHub Actions:** `BILLING_VM_HOST`, `BILLING_VM_USER`, `BILLING_VM_SSH_KEY` y
+`PROD_DATABASE_HOST`, `_PORT`, `_NAME`, `_USER`, `_PASSWORD`, `_SSLMODE`.
+
+**Si cambia `deploy/deploy.sh`** hay que copiarlo a mano a la VM, porque el CI usa la copia
+de `~/deploy.sh`:
+```bash
+scp deploy/deploy.sh ubuntu@<ip de la VM>:~/deploy.sh
+```
+
 ## Formateo automatico
 Este repo se autoformatea con gofmt en cada commit. Activalo una vez por clone:
 ```bash

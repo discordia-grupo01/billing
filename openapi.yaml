@@ -43,6 +43,8 @@ paths:
         La acreditación la hace el webhook; la pantalla de retorno consulta
         GET /v1/billing/purchases/{id} hasta que deje de estar pending.
       security: [{ bearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -65,6 +67,8 @@ paths:
                   checkout_url: { type: string, format: uri }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/CheckoutInProgress" }
+        "422": { $ref: "#/components/responses/IdempotencyKeyReused" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /v1/billing/points:
@@ -140,6 +144,8 @@ paths:
       summary: Crea la suscripción en MP y devuelve la página donde se carga la tarjeta
       description: Al terminar, MP vuelve a <CHECKOUT_RETURN_URL>/billing/return?kind=premium
       security: [{ bearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: false
         content:
@@ -163,10 +169,13 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "409":
-          description: ALREADY_SUBSCRIBED, ya tiene una suscripción que MP sigue cobrando
+          description: |
+            ALREADY_SUBSCRIBED, ya tiene una suscripción que MP sigue cobrando;
+            o CHECKOUT_IN_PROGRESS, otro pedido con la misma Idempotency-Key sigue en curso
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/IdempotencyKeyReused" }
 
   /v1/billing/premium/cancel:
     post:
@@ -210,7 +219,27 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+  parameters:
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: false
+      description: |
+        Clave única por intento de compra, por ejemplo un UUID generado al abrir la pantalla.
+        Repetir el pedido con la misma clave devuelve el mismo checkout en vez de crear otro.
+        Se recuerda durante 24 horas; si el checkout falla, se puede reintentar con la misma clave.
+      schema: { type: string, maxLength: 255 }
   responses:
+    CheckoutInProgress:
+      description: CHECKOUT_IN_PROGRESS, otro pedido con la misma Idempotency-Key sigue en curso
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    IdempotencyKeyReused:
+      description: IDEMPOTENCY_KEY_REUSED, la Idempotency-Key ya se usó para otro pedido
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     BadRequest:
       description: INVALID_REQUEST, UNKNOWN_PACKAGE o PAYER_EMAIL_REQUIRED
       content:

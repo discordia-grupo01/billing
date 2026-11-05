@@ -547,6 +547,81 @@ func TestReconcilePendingKeepsGoingAfterErrors(t *testing.T) {
 	}
 }
 
+func paidPurchase(store *fakePointsStore, age time.Duration) {
+	pendingPurchase(store, "ORD1", age)
+	p := store.purchases[purchaseID]
+	p.Status = model.PurchaseStatusPaid
+	store.purchases[purchaseID] = p
+}
+
+func TestReconcilePaid(t *testing.T) {
+	cases := map[string]struct {
+		age        time.Duration
+		order      model.PointsOrder
+		wantStatus model.PurchaseStatus
+		wantSeen   int
+	}{
+		"still paid": {
+			age: time.Hour, order: orderWith(model.OrderStatusProcessed, "accredited"),
+			wantStatus: model.PurchaseStatusPaid, wantSeen: 1,
+		},
+		"refund whose webhook was lost": {
+			age: time.Hour, order: orderWith(model.OrderStatusRefunded, "refunded"),
+			wantStatus: model.PurchaseStatusRefunded, wantSeen: 1,
+		},
+		"chargeback whose webhook was lost": {
+			age: 30 * 24 * time.Hour, order: orderWith(model.OrderStatusChargedBack, "settled"),
+			wantStatus: model.PurchaseStatusChargedBack, wantSeen: 1,
+		},
+		"older than the window": {
+			age: reversalCheckWindow + time.Hour, order: orderWith(model.OrderStatusRefunded, "refunded"),
+			wantStatus: model.PurchaseStatusPaid, wantSeen: 0,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := newFakePointsStore()
+			paidPurchase(store, tc.age)
+			s := newReconcileService(store, &fakeGateway{order: tc.order})
+
+			seen, err := s.ReconcilePaid(context.Background())
+			if err != nil || seen != tc.wantSeen {
+				t.Fatalf("seen = %d, err = %v; want %d", seen, err, tc.wantSeen)
+			}
+			if got := store.purchases[purchaseID].Status; got != tc.wantStatus {
+				t.Errorf("status = %s, want %s", got, tc.wantStatus)
+			}
+			if len(store.checked) != tc.wantSeen {
+				t.Errorf("marked as checked %d times, want %d", len(store.checked), tc.wantSeen)
+			}
+			if store.lastLimit != paidBatch {
+				t.Errorf("limit = %d, want %d", store.lastLimit, paidBatch)
+			}
+		})
+	}
+}
+
+func TestReconcilePaidKeepsAFailedPurchaseFirstInLine(t *testing.T) {
+	store := newFakePointsStore()
+	paidPurchase(store, time.Hour)
+	s := newReconcileService(store, &fakeGateway{getErr: errBoom})
+
+	if seen, err := s.ReconcilePaid(context.Background()); err != nil || seen != 1 {
+		t.Fatalf("seen = %d, err = %v", seen, err)
+	}
+	if len(store.checked) != 0 {
+		t.Errorf("a failed purchase should not be marked as checked: %v", store.checked)
+	}
+}
+
+func TestReconcilePaidListError(t *testing.T) {
+	store := newFakePointsStore()
+	store.err = errBoom
+	if _, err := newReconcileService(store, &fakeGateway{}).ReconcilePaid(context.Background()); !errors.Is(err, errBoom) {
+		t.Errorf("err = %v, want errBoom", err)
+	}
+}
+
 func TestReconcilePendingListError(t *testing.T) {
 	store := newFakePointsStore()
 	store.err = errBoom

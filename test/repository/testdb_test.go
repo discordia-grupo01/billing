@@ -33,6 +33,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 
 	applyMigration(t, pool, "0001_init.down.sql")
 	applyMigration(t, pool, "0001_init.up.sql")
+	applyMigration(t, pool, "0002_reconcile_reversals.up.sql")
 	return pool
 }
 

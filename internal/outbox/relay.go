@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	events "github.com/discordia-grupo01/events-contract/billing"
+	"github.com/discordia-grupo01/events-contract/boosts"
 
 	"github.com/discordia-grupo01/billing/internal/model"
 )
@@ -69,6 +70,13 @@ func (r *Relay) sign(e model.OutboxEvent) ([]byte, error) {
 			return nil, fmt.Errorf("outbox: decode %s %s: %w", e.RoutingKey, e.ID, err)
 		}
 		evt.Sign(r.secret)
+		return json.Marshal(evt)
+	case boosts.RoutingKeyRequested, boosts.RoutingKeyCancelled, boosts.RoutingKeyRemoved:
+		var evt boosts.SagaEvent
+		if err := json.Unmarshal(e.Payload, &evt); err != nil {
+			return nil, fmt.Errorf("outbox: decode %s %s: %w", e.RoutingKey, e.ID, err)
+		}
+		evt.Sign(e.RoutingKey, r.secret)
 		return json.Marshal(evt)
 	default:
 		return nil, fmt.Errorf("outbox: no signer for routing key %q", e.RoutingKey)

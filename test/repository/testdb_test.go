@@ -31,11 +31,15 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 
+	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS server_boosts`); err != nil {
+		t.Fatalf("drop server_boosts: %v", err)
+	}
 	applyMigration(t, pool, "0001_init.down.sql")
 	applyMigration(t, pool, "0001_init.up.sql")
 	applyMigration(t, pool, "0002_reconcile_reversals.up.sql")
 	applyMigration(t, pool, "0003_checkout_requests.down.sql")
 	applyMigration(t, pool, "0003_checkout_requests.up.sql")
+	applyMigration(t, pool, "0004_server_boosts.up.sql")
 	return pool
 }
 

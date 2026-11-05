@@ -2,11 +2,13 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/discordia-grupo01/billing/internal/model"
 	"github.com/discordia-grupo01/billing/internal/service"
 )
 
@@ -35,6 +37,13 @@ const (
 	CodeIdempotencyKeyReused  = "IDEMPOTENCY_KEY_REUSED"
 	checkoutInProgressMessage = "Ya estamos procesando este pedido, probá de nuevo en unos segundos"
 	checkoutKeyReusedMessage  = "Esta clave ya se usó para otro pedido"
+
+	CodeBoostNotFound        = "BOOST_NOT_FOUND"
+	CodeBoostNotActive       = "BOOST_NOT_ACTIVE"
+	CodeInsufficientPoints   = "INSUFFICIENT_POINTS"
+	boostNotFoundMessage     = "El boost no existe"
+	boostNotActiveMessage    = "Solo se puede retirar un boost activo"
+	insufficientPointsFormat = "Te faltan %d puntos para boostear este servidor"
 )
 
 type errorBody struct {
@@ -42,8 +51,9 @@ type errorBody struct {
 }
 
 type apiError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
 }
 
 func writeError(c *gin.Context, status int, code, message string) {
@@ -53,7 +63,22 @@ func writeError(c *gin.Context, status int, code, message string) {
 // writeServiceError maps the use cases' errors to HTTP. Anything unknown is
 // logged and hidden behind a 500.
 func writeServiceError(c *gin.Context, log *slog.Logger, err error) {
+	var insufficient model.InsufficientPointsError
+	if errors.As(err, &insufficient) {
+		c.AbortWithStatusJSON(http.StatusConflict, errorBody{Error: apiError{
+			Code:    CodeInsufficientPoints,
+			Message: fmt.Sprintf(insufficientPointsFormat, insufficient.Missing()),
+			Details: map[string]any{
+				"balance": insufficient.Balance,
+				"cost":    insufficient.Cost,
+				"missing": insufficient.Missing(),
+			},
+		}})
+		return
+	}
 	switch {
+	case errors.Is(err, model.ErrBoostNotActive):
+		writeError(c, http.StatusConflict, CodeBoostNotActive, boostNotActiveMessage)
 	case errors.Is(err, service.ErrUnknownPackage):
 		writeError(c, http.StatusBadRequest, CodeUnknownPackage, unknownPackageMessage)
 	case errors.Is(err, service.ErrPayerEmailRequired):

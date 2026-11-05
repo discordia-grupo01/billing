@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	events "github.com/discordia-grupo01/events-contract/billing"
+	"github.com/discordia-grupo01/events-contract/boosts"
 	"github.com/discordia-grupo01/events-contract/envelope"
 
 	"github.com/discordia-grupo01/billing/internal/model"
@@ -137,5 +138,42 @@ func TestDrainNeverPublishesUnsigned(t *testing.T) {
 				t.Errorf("err = %v, sent %d; want an error and nothing sent", err, len(pub.sent))
 			}
 		})
+	}
+}
+
+func TestRelaySignsEveryBoostEventWithItsRoutingKey(t *testing.T) {
+	for _, key := range []string{boosts.RoutingKeyRequested, boosts.RoutingKeyCancelled, boosts.RoutingKeyRemoved} {
+		t.Run(key, func(t *testing.T) {
+			payload, err := json.Marshal(boosts.SagaEvent{
+				Meta:     envelope.Meta{EventID: "evt-1", OccurredAt: time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)},
+				BoostID:  uuid.NewString(),
+				ServerID: uuid.NewString(),
+				UserID:   uuid.NewString(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := NewRelay(nil, nil, secret).sign(model.OutboxEvent{ID: uuid.New(), RoutingKey: key, Payload: payload})
+			if err != nil {
+				t.Fatalf("sign() error = %v", err)
+			}
+			var evt boosts.SagaEvent
+			if err := json.Unmarshal(got, &evt); err != nil {
+				t.Fatal(err)
+			}
+			if !evt.Verify(key, secret) {
+				t.Error("the published event doesn't verify")
+			}
+			if evt.Verify(boosts.RoutingKeyApplied, secret) {
+				t.Error("it verified under another routing key")
+			}
+		})
+	}
+}
+
+func TestRelayRejectsABadBoostPayload(t *testing.T) {
+	_, err := NewRelay(nil, nil, secret).sign(model.OutboxEvent{ID: uuid.New(), RoutingKey: boosts.RoutingKeyRequested, Payload: []byte(`nope`)})
+	if err == nil {
+		t.Error("expected an error")
 	}
 }

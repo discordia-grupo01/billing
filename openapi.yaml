@@ -194,6 +194,103 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /v1/billing/boosts:
+    post:
+      summary: Boostea un servidor con 100 puntos
+      description: |
+        Reserva los puntos y le pregunta a servers si puede aplicar el boost, así
+        que responde 202 con el boost en pending. Consultar
+        GET /v1/billing/boosts/{id} hasta que deje de estar pending: normalmente
+        tarda segundos. Si servers lo rechaza (servidor inexistente o suspendido,
+        o quien boostea no es miembro) queda failed y los puntos vuelven. Si no
+        responde en 24 horas, también vuelven. Con Idempotency-Key, un doble clic
+        devuelve el mismo boost y cobra una sola vez.
+      security: [{ bearer: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [server_id]
+              properties:
+                server_id: { type: string, format: uuid }
+      responses:
+        "202":
+          description: Boost en pending, con los puntos ya descontados
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Boost" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: INSUFFICIENT_POINTS, con balance, cost y missing en details
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/IdempotencyKeyReused" }
+    get:
+      summary: Mis boosts, del más nuevo al más viejo
+      security: [{ bearer: [] }]
+      parameters:
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [boosts]
+                properties:
+                  boosts:
+                    type: array
+                    items: { $ref: "#/components/schemas/Boost" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/billing/boosts/{id}:
+    parameters:
+      - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+    get:
+      summary: Estado de un boost propio
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Boost" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: BOOST_NOT_FOUND; también si el boost es de otro usuario
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      summary: Retira un boost activo propio, sin devolver los puntos
+      description: Se puede retirar aunque ya no seas miembro del servidor.
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Boost en removed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Boost" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: BOOST_NOT_FOUND
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: BOOST_NOT_ACTIVE
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /webhooks/mercadopago:
     post:
       summary: Notificaciones de Mercado Pago
@@ -264,6 +361,28 @@ components:
           properties:
             code: { type: string }
             message: { type: string }
+            details:
+              type: object
+              description: Solo en algunos errores, como INSUFFICIENT_POINTS.
+              additionalProperties: true
+    Boost:
+      type: object
+      required: [id, server_id, points, status, status_detail, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        server_id: { type: string, format: uuid }
+        points: { type: integer, example: 100 }
+        status:
+          type: string
+          enum: [pending, active, failed, removed]
+          description: failed devolvió los puntos; removed no.
+        status_detail:
+          type: string
+          description: |
+            Por qué falló o se retiró: server_not_found, server_suspended,
+            not_a_member, cancelled, no_response o server_deleted. Vacío si no aplica.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
     Package:
       type: object
       properties:

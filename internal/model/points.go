@@ -20,9 +20,11 @@ const (
 type LedgerReason string
 
 const (
-	LedgerReasonPurchase   LedgerReason = "purchase"
-	LedgerReasonRefund     LedgerReason = "refund"
-	LedgerReasonChargeback LedgerReason = "chargeback"
+	LedgerReasonPurchase    LedgerReason = "purchase"
+	LedgerReasonRefund      LedgerReason = "refund"
+	LedgerReasonChargeback  LedgerReason = "chargeback"
+	LedgerReasonBoost       LedgerReason = "boost"
+	LedgerReasonBoostRefund LedgerReason = "boost_refund"
 )
 
 type PointPurchase struct {

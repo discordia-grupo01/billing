@@ -32,6 +32,8 @@ const (
 	paidReconcileInterval     = time.Hour
 	premiumReconcileInterval  = time.Hour
 	checkoutCleanupInterval   = time.Hour
+	boostRepublishInterval    = 5 * time.Minute
+	boostCancelInterval       = 15 * time.Minute
 	shutdownTimeout           = 20 * time.Second
 )
 
@@ -75,6 +77,8 @@ func main() {
 	checkouts := service.NewCheckoutGuard(repository.NewCheckoutRequestRepository(pool), logger)
 	handler.NewBillingHandler(points, premium, checkouts, logger).Register(router, middleware.Auth([]byte(cfg.JWTSecret)))
 	handler.NewWebhookHandler(points, premium, cfg.MPWebhookSecret, logger).Register(router)
+	boostsService := service.NewBoostService(repository.NewBoostRepository(pool), cfg.BillingEventsHMACSecret, logger)
+	handler.NewBoostHandler(boostsService, logger).Register(router, middleware.Auth([]byte(cfg.JWTSecret)))
 	if cfg.DevTools {
 		logger.Warn("BILLING_DEV_TOOLS is on: /dev/billing/simulate-* can renew or expire anyone's Premium")
 		simulator := service.NewPremiumSimulator(premium, premiumRepo)
@@ -112,7 +116,15 @@ func main() {
 		jobs.Job{Name: "points_paid_reconcile", Interval: paidReconcileInterval, Run: points.ReconcilePaid},
 		jobs.Job{Name: "premium_reconcile", Interval: premiumReconcileInterval, Run: premium.ReconcileSubscriptions},
 		jobs.Job{Name: "checkout_keys_cleanup", Interval: checkoutCleanupInterval, Run: checkouts.DeleteExpired},
+		jobs.Job{Name: "boost_republish", Interval: boostRepublishInterval, Run: boostsService.RepublishPending},
+		jobs.Job{Name: "boost_cancel_expired", Interval: boostCancelInterval, Run: boostsService.CancelExpired},
 	)
+
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		rabbitmq.NewConsumer(cfg.RabbitMQURL, service.ServersEventsQueue, service.ServersEventsRoutingKeys(), boostsService.HandleEvent, logger).Run(ctx)
+	}()
 
 	srv := &http.Server{Addr: cfg.Host + ":" + cfg.Port, Handler: router, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
@@ -130,4 +142,5 @@ func main() {
 		log.Printf("http shutdown: %v", err)
 	}
 	waitJobs()
+	<-consumerDone
 }

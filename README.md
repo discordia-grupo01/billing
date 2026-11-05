@@ -77,10 +77,19 @@ Cobertura minima: 70% (requisito del proyecto).
 Ver openapi.yaml.
 
 ## Eventos que publica
-- <evento> - cuando se dispara
+Todos van firmados con `BILLING_EVENTS_HMAC_SECRET`.
+- `billing.premium_updated` - cuando cambia el Premium de un usuario
+- `billing.server_boost_requested` - al reservar los puntos de un boost, y de nuevo cada 5 minutos mientras siga `pending`
+- `billing.server_boost_cancelled` - a las 24 horas sin respuesta de `servers`, después de devolver los puntos
+- `billing.server_boost_removed` - cuando el dueño retira un boost, sin devolución
 
 ## Eventos que consume
-- <evento> - que hace al recibirlo
+Cola `billing.servers_events`:
+- `servers.server_boost_applied` - pasa el boost a `active`
+- `servers.server_boost_rejected` - pasa el boost a `failed` y devuelve los puntos
+- `servers.server_deleted` - pasa a `removed` los boosts activos del servidor, sin devolución
+
+Los dos primeros se verifican con la firma antes de tocar nada. Solo una regla de negocio rechaza un boost: si falla la base, el evento se reencola y los puntos no se devuelven.
 
 ## Health checks
 - GET /livez

@@ -249,12 +249,28 @@ func (s *PremiumService) ProcessChargeNotification(ctx context.Context, chargeID
 	if err != nil {
 		return err
 	}
-	_, err = s.store.ApplyCharge(ctx, charge)
+	err = s.applyCharge(ctx, charge)
 	if errors.Is(err, model.ErrNotFound) {
 		s.log.Warn("ignoring charge of unknown subscription", "charge_id", chargeID, "preapproval_id", charge.PreapprovalID)
 		return nil
 	}
 	return err
+}
+
+// applyCharge stores a charge read from MP. A refunded or charged-back one
+// also ends Premium, so the reversal isn't lost if its webhook never arrives.
+func (s *PremiumService) applyCharge(ctx context.Context, c model.Charge) error {
+	if _, err := s.store.ApplyCharge(ctx, c); err != nil {
+		return err
+	}
+	if c.PaymentID == "" || !isReversed(c.PaymentStatus) {
+		return nil
+	}
+	return s.revokeAndCancel(ctx, c.PaymentID, c.PaymentStatus)
+}
+
+func isReversed(paymentStatus string) bool {
+	return paymentStatus == model.PaymentStatusRefunded || paymentStatus == model.PaymentStatusChargedBack
 }
 
 // ProcessChargebackNotification handles topic_chargebacks_wh, which carries
@@ -285,11 +301,14 @@ func (s *PremiumService) ProcessPaymentNotification(ctx context.Context, payment
 	if err != nil {
 		return err
 	}
-	if payment.Status != model.PaymentStatusRefunded && payment.Status != model.PaymentStatusChargedBack {
+	if !isReversed(payment.Status) {
 		return nil
 	}
+	return s.revokeAndCancel(ctx, payment.ID, payment.Status)
+}
 
-	rev, _, err := s.store.RevokeCharge(ctx, payment.ID, payment.Status)
+func (s *PremiumService) revokeAndCancel(ctx context.Context, paymentID, paymentStatus string) error {
+	rev, _, err := s.store.RevokeCharge(ctx, paymentID, paymentStatus)
 	if errors.Is(err, model.ErrNotFound) {
 		// Not a monthly charge: points payments arrive through the order topic.
 		return nil
@@ -368,7 +387,7 @@ func (s *PremiumService) ReconcileSubscription(ctx context.Context, preapprovalI
 		return err
 	}
 	for _, c := range charges {
-		if _, err := s.store.ApplyCharge(ctx, c); err != nil {
+		if err := s.applyCharge(ctx, c); err != nil {
 			return err
 		}
 	}

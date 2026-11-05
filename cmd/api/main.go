@@ -29,6 +29,7 @@ const (
 	outboxTimeout             = 30 * time.Second
 	expiryInterval            = time.Minute
 	purchaseReconcileInterval = 15 * time.Minute
+	paidReconcileInterval     = time.Hour
 	premiumReconcileInterval  = time.Hour
 	shutdownTimeout           = 20 * time.Second
 )
@@ -106,6 +107,7 @@ func main() {
 		jobs.Job{Name: "outbox_relay", Interval: outboxInterval, Timeout: outboxTimeout, Run: relay.Drain},
 		jobs.Job{Name: "premium_expiry", Interval: expiryInterval, Run: premium.ExpireDue},
 		jobs.Job{Name: "points_reconcile", Interval: purchaseReconcileInterval, Run: points.ReconcilePending},
+		jobs.Job{Name: "points_paid_reconcile", Interval: paidReconcileInterval, Run: points.ReconcilePaid},
 		jobs.Job{Name: "premium_reconcile", Interval: premiumReconcileInterval, Run: premium.ReconcileSubscriptions},
 	)
 

@@ -668,6 +668,69 @@ func TestReconcileSubscription(t *testing.T) {
 	}
 }
 
+func TestReconcileRevokesChargeWhoseWebhookWasLost(t *testing.T) {
+	for _, status := range []string{model.PaymentStatusRefunded, model.PaymentStatusChargedBack} {
+		t.Run(status, func(t *testing.T) {
+			store := newFakePremiumStore(premiumNow)
+			seedPaidPremium(store)
+			reversed := store.charges["AP1"]
+			reversed.PaymentStatus = status
+			gw := &fakeGateway{sub: mpSub("PRE1", "authorized"), charges: []model.Charge{reversed}}
+			s := newPremiumService(store, gw, PremiumConfig{})
+
+			if err := s.ReconcileSubscription(context.Background(), "PRE1"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			p := store.premium[userID]
+			if p.PremiumUntil == nil || !p.PremiumUntil.Equal(premiumNow) || p.Renews {
+				t.Errorf("Premium should end now without renewal: %+v", p)
+			}
+			if !slices.Equal(gw.cancelled, []string{"PRE1"}) {
+				t.Errorf("cancelled in MP = %v, want PRE1", gw.cancelled)
+			}
+		})
+	}
+}
+
+func TestReconcileThenWebhookRevokesOnce(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	seedPaidPremium(store)
+	reversed := store.charges["AP1"]
+	reversed.PaymentStatus = model.PaymentStatusRefunded
+	gw := &fakeGateway{
+		sub:     mpSub("PRE1", "authorized"),
+		charges: []model.Charge{reversed},
+		payment: model.Payment{ID: "555", Status: model.PaymentStatusRefunded},
+	}
+	s := newPremiumService(store, gw, PremiumConfig{})
+
+	if err := s.ReconcileSubscription(context.Background(), "PRE1"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if err := s.ProcessPaymentNotification(context.Background(), "555"); err != nil {
+		t.Fatalf("webhook: %v", err)
+	}
+	if len(gw.cancelled) != 1 {
+		t.Errorf("cancelled in MP %d times, want 1", len(gw.cancelled))
+	}
+}
+
+func TestReconcileLeavesApprovedChargesAlone(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	seedPaidPremium(store)
+	until := *store.premium[userID].PremiumUntil
+	gw := &fakeGateway{sub: mpSub("PRE1", "authorized"), charges: []model.Charge{store.charges["AP1"]}}
+	s := newPremiumService(store, gw, PremiumConfig{})
+
+	if err := s.ReconcileSubscription(context.Background(), "PRE1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p := store.premium[userID]; !p.PremiumUntil.Equal(until) || len(gw.cancelled) != 0 {
+		t.Errorf("nothing should change: until %v, cancelled %v", p.PremiumUntil, gw.cancelled)
+	}
+}
+
 func TestReconcileSubscriptionErrors(t *testing.T) {
 	t.Run("store GetSubscription", func(t *testing.T) {
 		s := newPremiumService(newFakePremiumStore(premiumNow), &fakeGateway{}, PremiumConfig{})

@@ -130,6 +130,7 @@ type fakePointsStore struct {
 	ledger    []model.LedgerEntry
 	calls     []string
 	lastLimit int
+	checked   []uuid.UUID
 	err       error // returned by every method when set
 }
 
@@ -178,6 +179,28 @@ func (f *fakePointsStore) GetPurchase(_ context.Context, id uuid.UUID) (model.Po
 func (f *fakePointsStore) ListPurchases(_ context.Context, _ uuid.UUID, limit int) ([]model.PointPurchase, error) {
 	f.lastLimit = limit
 	return nil, f.record("ListPurchases")
+}
+
+func (f *fakePointsStore) ListPaidPurchasesToRecheck(_ context.Context, createdAfter time.Time, limit int) ([]model.PointPurchase, error) {
+	if err := f.record("ListPaidPurchasesToRecheck"); err != nil {
+		return nil, err
+	}
+	f.lastLimit = limit
+	var out []model.PointPurchase
+	for _, p := range f.purchases {
+		if p.Status == model.PurchaseStatusPaid && p.CreatedAt.After(createdAfter) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakePointsStore) MarkReversalChecked(_ context.Context, purchaseID uuid.UUID) error {
+	if err := f.record("MarkReversalChecked"); err != nil {
+		return err
+	}
+	f.checked = append(f.checked, purchaseID)
+	return nil
 }
 
 func (f *fakePointsStore) ListPendingPurchases(_ context.Context, createdBefore time.Time, limit int) ([]model.PointPurchase, error) {
@@ -260,6 +283,8 @@ func (f *fakePointsStore) ListLedger(_ context.Context, _ uuid.UUID, limit int) 
 // fakePremiumStore mimics the real premium repository in memory, including
 // the one-live-subscription-per-user rule and the charge bookkeeping.
 type fakePremiumStore struct {
+	revoked map[string]bool
+
 	subs    []model.SubscriptionRecord // in creation order
 	premium map[uuid.UUID]model.Premium
 	charges map[string]model.Charge
@@ -441,14 +466,15 @@ func (f *fakePremiumStore) RevokeCharge(_ context.Context, paymentID, paymentSta
 		}
 		i, _ := f.sub(c.PreapprovalID)
 		rev := model.Revocation{UserID: f.subs[i].UserID, PreapprovalID: c.PreapprovalID}
-		if c.PaymentStatus == paymentStatus {
-			return rev, false, nil
-		}
 		c.PaymentStatus = paymentStatus
 		f.charges[id] = c
-		if c.AppliedAt == nil {
+		if c.AppliedAt == nil || f.revoked[id] {
 			return rev, false, nil
 		}
+		if f.revoked == nil {
+			f.revoked = map[string]bool{}
+		}
+		f.revoked[id] = true
 		p := f.premium[rev.UserID]
 		if p.PremiumUntil != nil && p.PremiumUntil.After(f.now) {
 			now := f.now

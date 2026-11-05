@@ -30,6 +30,11 @@ const (
 	alreadySubscribedMessage = "Ya tenés una suscripción a Premium activa"
 	noSubscriptionMessage    = "No tenés una suscripción a Premium activa"
 	noActivePremiumMessage   = "No tenés Premium activo"
+
+	CodeCheckoutInProgress    = "CHECKOUT_IN_PROGRESS"
+	CodeIdempotencyKeyReused  = "IDEMPOTENCY_KEY_REUSED"
+	checkoutInProgressMessage = "Ya estamos procesando este pedido, probá de nuevo en unos segundos"
+	checkoutKeyReusedMessage  = "Esta clave ya se usó para otro pedido"
 )
 
 type errorBody struct {
@@ -59,6 +64,10 @@ func writeServiceError(c *gin.Context, log *slog.Logger, err error) {
 		writeError(c, http.StatusConflict, CodeNoLiveSubscription, noSubscriptionMessage)
 	case errors.Is(err, service.ErrNoActivePremium):
 		writeError(c, http.StatusConflict, CodeNoActivePremium, noActivePremiumMessage)
+	case errors.Is(err, service.ErrCheckoutInProgress):
+		writeError(c, http.StatusConflict, CodeCheckoutInProgress, checkoutInProgressMessage)
+	case errors.Is(err, service.ErrCheckoutKeyReused):
+		writeError(c, http.StatusUnprocessableEntity, CodeIdempotencyKeyReused, checkoutKeyReusedMessage)
 	default:
 		log.Error("request failed", "method", c.Request.Method, "path", c.FullPath(), "error", err)
 		writeError(c, http.StatusInternalServerError, CodeInternalError, internalErrorMessage)

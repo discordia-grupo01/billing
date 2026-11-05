@@ -31,6 +31,7 @@ const (
 	purchaseReconcileInterval = 15 * time.Minute
 	paidReconcileInterval     = time.Hour
 	premiumReconcileInterval  = time.Hour
+	checkoutCleanupInterval   = time.Hour
 	shutdownTimeout           = 20 * time.Second
 )
 
@@ -71,7 +72,8 @@ func main() {
 	}, logger)
 
 	router := gin.Default()
-	handler.NewBillingHandler(points, premium, logger).Register(router, middleware.Auth([]byte(cfg.JWTSecret)))
+	checkouts := service.NewCheckoutGuard(repository.NewCheckoutRequestRepository(pool), logger)
+	handler.NewBillingHandler(points, premium, checkouts, logger).Register(router, middleware.Auth([]byte(cfg.JWTSecret)))
 	handler.NewWebhookHandler(points, premium, cfg.MPWebhookSecret, logger).Register(router)
 	if cfg.DevTools {
 		logger.Warn("BILLING_DEV_TOOLS is on: /dev/billing/simulate-* can renew or expire anyone's Premium")
@@ -109,6 +111,7 @@ func main() {
 		jobs.Job{Name: "points_reconcile", Interval: purchaseReconcileInterval, Run: points.ReconcilePending},
 		jobs.Job{Name: "points_paid_reconcile", Interval: paidReconcileInterval, Run: points.ReconcilePaid},
 		jobs.Job{Name: "premium_reconcile", Interval: premiumReconcileInterval, Run: premium.ReconcileSubscriptions},
+		jobs.Job{Name: "checkout_keys_cleanup", Interval: checkoutCleanupInterval, Run: checkouts.DeleteExpired},
 	)
 
 	srv := &http.Server{Addr: cfg.Host + ":" + cfg.Port, Handler: router, ReadHeaderTimeout: 10 * time.Second}

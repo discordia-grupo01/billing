@@ -33,17 +33,30 @@ type PremiumUseCases interface {
 	State(ctx context.Context, userID uuid.UUID, refresh bool) (service.PremiumView, error)
 }
 
-type BillingHandler struct {
-	points  PointsUseCases
-	premium PremiumUseCases
-	log     *slog.Logger
+// CheckoutRunner is what the checkout routes need from service.CheckoutGuard.
+type CheckoutRunner interface {
+	Run(ctx context.Context, k model.CheckoutKey, fingerprint string, checkout func(context.Context) (service.Checkout, error)) (service.Checkout, error)
 }
 
-func NewBillingHandler(points PointsUseCases, premium PremiumUseCases, logger *slog.Logger) *BillingHandler {
+const (
+	idempotencyKeyHeader    = "Idempotency-Key"
+	maxIdempotencyKeyLength = 255
+	// There is a single Premium plan, so its checkouts have nothing to tell apart.
+	premiumFingerprint = "premium"
+)
+
+type BillingHandler struct {
+	points    PointsUseCases
+	premium   PremiumUseCases
+	checkouts CheckoutRunner
+	log       *slog.Logger
+}
+
+func NewBillingHandler(points PointsUseCases, premium PremiumUseCases, checkouts CheckoutRunner, logger *slog.Logger) *BillingHandler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &BillingHandler{points: points, premium: premium, log: logger}
+	return &BillingHandler{points: points, premium: premium, checkouts: checkouts, log: logger}
 }
 
 // Register mounts the user routes behind auth.
@@ -90,8 +103,16 @@ func (h *BillingHandler) startPointsCheckout(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
 		return
 	}
-	checkout, err := h.points.StartCheckout(c.Request.Context(), middleware.UserID(c), req.PackageID,
-		service.CheckoutPayer{Email: req.PayerEmail})
+	key, ok := idempotencyKey(c)
+	if !ok {
+		return
+	}
+	userID := middleware.UserID(c)
+	checkout, err := h.checkouts.Run(c.Request.Context(),
+		model.CheckoutKey{UserID: userID, Scope: model.CheckoutScopePoints, Key: key}, req.PackageID,
+		func(ctx context.Context) (service.Checkout, error) {
+			return h.points.StartCheckout(ctx, userID, req.PackageID, service.CheckoutPayer{Email: req.PayerEmail})
+		})
 	if err != nil {
 		writeServiceError(c, h.log, err)
 		return
@@ -244,12 +265,33 @@ func (h *BillingHandler) startPremiumCheckout(c *gin.Context) {
 			return
 		}
 	}
-	url, err := h.premium.StartCheckout(c.Request.Context(), middleware.UserID(c), req.PayerEmail)
+	key, ok := idempotencyKey(c)
+	if !ok {
+		return
+	}
+	userID := middleware.UserID(c)
+	checkout, err := h.checkouts.Run(c.Request.Context(),
+		model.CheckoutKey{UserID: userID, Scope: model.CheckoutScopePremium, Key: key}, premiumFingerprint,
+		func(ctx context.Context) (service.Checkout, error) {
+			url, err := h.premium.StartCheckout(ctx, userID, req.PayerEmail)
+			return service.Checkout{CheckoutURL: url}, err
+		})
 	if err != nil {
 		writeServiceError(c, h.log, err)
 		return
 	}
-	c.JSON(http.StatusCreated, checkoutResponse{CheckoutURL: url})
+	c.JSON(http.StatusCreated, checkoutResponse{CheckoutURL: checkout.CheckoutURL})
+}
+
+// idempotencyKey reads the optional header. It answers the request itself if
+// the key is too long.
+func idempotencyKey(c *gin.Context) (string, bool) {
+	key := c.GetHeader(idempotencyKeyHeader)
+	if len(key) > maxIdempotencyKeyLength {
+		writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
+		return "", false
+	}
+	return key, true
 }
 
 func (h *BillingHandler) cancelPremium(c *gin.Context) {

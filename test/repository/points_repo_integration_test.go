@@ -310,6 +310,40 @@ func TestListPendingPurchases(t *testing.T) {
 	}
 }
 
+func TestListPaidPurchasesToRecheck(t *testing.T) {
+	repo, pool := newPointsRepo(t)
+	ctx := context.Background()
+	userID := uuid.New()
+
+	checked := newPaidPurchase(t, repo, userID, 100)
+	unchecked := newPaidPurchase(t, repo, userID, 100)
+	tooOld := newPaidPurchase(t, repo, userID, 100)
+	newOrderedPurchase(t, repo, userID, 100)
+	if _, err := pool.Exec(ctx,
+		`UPDATE point_purchases SET created_at = now() - interval '200 days' WHERE id = $1`, tooOld.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.MarkReversalChecked(ctx, checked.ID); err != nil {
+		t.Fatalf("MarkReversalChecked: %v", err)
+	}
+
+	got, err := repo.ListPaidPurchasesToRecheck(ctx, time.Now().Add(-180*24*time.Hour), 10)
+	if err != nil {
+		t.Fatalf("ListPaidPurchasesToRecheck: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != unchecked.ID || got[1].ID != checked.ID {
+		t.Fatalf("want [unchecked, checked] without the old or unpaid ones, got %+v", got)
+	}
+
+	if err := repo.MarkReversalChecked(ctx, unchecked.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err = repo.ListPaidPurchasesToRecheck(ctx, time.Now().Add(-180*24*time.Hour), 1)
+	if err != nil || len(got) != 1 || got[0].ID != checked.ID {
+		t.Errorf("the least recently checked should come first: %+v, %v", got, err)
+	}
+}
+
 func TestBalanceAndHistory(t *testing.T) {
 	repo, _ := newPointsRepo(t)
 	ctx := context.Background()

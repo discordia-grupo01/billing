@@ -76,11 +76,18 @@ func (r *PremiumRepository) LatestSubscription(ctx context.Context, userID uuid.
 }
 
 // ListSubscriptionsToReconcile returns the subscriptions that may still
-// change on MP's side, oldest-checked first.
+// change on MP's side, oldest-checked first. A cancelled one counts while the
+// period it paid for is still running, because that payment can be refunded.
 func (r *PremiumRepository) ListSubscriptionsToReconcile(ctx context.Context, limit int) ([]model.SubscriptionRecord, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT `+subscriptionColumns+` FROM subscriptions
-		WHERE mp_status IN ('pending', 'authorized')
+		SELECT `+subscriptionColumns+` FROM subscriptions s
+		WHERE mp_status IN ('pending', 'authorized', 'paused')
+		   OR (mp_status = 'cancelled' AND EXISTS (
+				SELECT 1 FROM subscription_charges sc
+				JOIN premium_status ps ON ps.user_id = s.user_id
+				WHERE sc.mp_preapproval_id = s.mp_preapproval_id
+				  AND sc.applied_at IS NOT NULL AND sc.revoked_at IS NULL
+				  AND ps.premium_until > now()))
 		ORDER BY updated_at LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("repository: list subscriptions to reconcile: %w", err)
@@ -230,28 +237,28 @@ func (r *PremiumRepository) RevokeCharge(ctx context.Context, paymentID, payment
 			return err
 		}
 
-		var current *string
-		var appliedAt *time.Time
+		var appliedAt, revokedAt *time.Time
 		if err := tx.QueryRow(ctx, `
-			SELECT payment_status, applied_at FROM subscription_charges WHERE mp_payment_id = $1 FOR UPDATE`,
-			paymentID).Scan(&current, &appliedAt); err != nil {
+			SELECT applied_at, revoked_at FROM subscription_charges WHERE mp_payment_id = $1 FOR UPDATE`,
+			paymentID).Scan(&appliedAt, &revokedAt); err != nil {
 			return err
-		}
-		if current != nil && *current == paymentStatus {
-			return nil
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE subscription_charges SET payment_status = $2, updated_at = now() WHERE mp_payment_id = $1`,
 			paymentID, paymentStatus); err != nil {
 			return err
 		}
-		if appliedAt == nil {
+		if appliedAt == nil || revokedAt != nil {
 			return nil
 		}
 
 		if _, err := tx.Exec(ctx, `
 			UPDATE premium_status SET premium_until = LEAST(premium_until, now()), renews = false
 			WHERE user_id = $1`, rev.UserID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE subscription_charges SET revoked_at = now() WHERE mp_payment_id = $1`, paymentID); err != nil {
 			return err
 		}
 		revoked = true
@@ -296,6 +303,32 @@ func (r *PremiumRepository) ExpireDue(ctx context.Context, limit int) (int, erro
 		return 0, fmt.Errorf("repository: expire due: %w", err)
 	}
 	return expired, nil
+}
+
+// RepublishAll emits a new billing.premium_updated with the current state of
+// every user in premium_status, for consumers whose queue didn't exist when the
+// original events went out. It bumps each version, so a consumer that already
+// has the user applies it too, with the same result. Each user has its own
+// transaction: after a failure, running it again is safe. Returns how many
+// events were written.
+func (r *PremiumRepository) RepublishAll(ctx context.Context) (int, error) {
+	rows, err := r.pool.Query(ctx, `SELECT user_id FROM premium_status ORDER BY user_id`)
+	if err != nil {
+		return 0, fmt.Errorf("repository: list premium users: %w", err)
+	}
+	userIDs, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return 0, fmt.Errorf("repository: list premium users: %w", err)
+	}
+	for i, id := range userIDs {
+		err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+			return emitPremiumUpdated(ctx, tx, id)
+		})
+		if err != nil {
+			return i, fmt.Errorf("repository: republish premium of %s: %w", id, err)
+		}
+	}
+	return len(userIDs), nil
 }
 
 // EndPremiumPeriod moves premium_until a second into the past, as if the

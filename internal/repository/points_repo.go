@@ -124,6 +124,37 @@ func (r *PointsRepository) ListPendingPurchases(ctx context.Context, createdBefo
 	return out, rows.Err()
 }
 
+// ListPaidPurchasesToRecheck returns paid purchases created after createdAfter,
+// least recently checked first, in case the notification of a refund or
+// chargeback was lost.
+func (r *PointsRepository) ListPaidPurchasesToRecheck(ctx context.Context, createdAfter time.Time, limit int) ([]model.PointPurchase, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+purchaseColumns+` FROM point_purchases
+		WHERE status = 'paid' AND mp_order_id IS NOT NULL AND created_at > $1
+		ORDER BY reversal_checked_at NULLS FIRST, created_at LIMIT $2`, createdAfter, limit)
+	if err != nil {
+		return nil, fmt.Errorf("repository: list paid purchases: %w", err)
+	}
+	defer rows.Close()
+	var out []model.PointPurchase
+	for rows.Next() {
+		p, err := scanPurchase(rows)
+		if err != nil {
+			return nil, fmt.Errorf("repository: list paid purchases: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (r *PointsRepository) MarkReversalChecked(ctx context.Context, purchaseID uuid.UUID) error {
+	if _, err := r.pool.Exec(ctx,
+		`UPDATE point_purchases SET reversal_checked_at = now() WHERE id = $1`, purchaseID); err != nil {
+		return fmt.Errorf("repository: mark reversal checked: %w", err)
+	}
+	return nil
+}
+
 // MarkUnpaid records a failed or expired order. It only moves a purchase
 // that is still pending, so a late "failed" notification can never undo a
 // purchase that was already paid. Returns false if nothing changed.

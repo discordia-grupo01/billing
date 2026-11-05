@@ -116,8 +116,42 @@ func fakeAuth(c *gin.Context) {
 func newRouter(points *fakePoints, premium *fakePremium) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	NewBillingHandler(points, premium, quietLog).Register(r, fakeAuth)
+	NewBillingHandler(points, premium, &fakeRunner{}, quietLog).Register(r, fakeAuth)
 	return r
+}
+
+// fakeRunner runs the checkout unless err is set, and records what it was given.
+type fakeRunner struct {
+	key         model.CheckoutKey
+	fingerprint string
+	err         error
+}
+
+func (f *fakeRunner) Run(ctx context.Context, k model.CheckoutKey, fingerprint string, checkout func(context.Context) (service.Checkout, error)) (service.Checkout, error) {
+	f.key, f.fingerprint = k, fingerprint
+	if f.err != nil {
+		return service.Checkout{}, f.err
+	}
+	return checkout(ctx)
+}
+
+func routerWithRunner(runner CheckoutRunner) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	NewBillingHandler(
+		&fakePoints{checkout: service.Checkout{PurchaseID: purchaseID, CheckoutURL: "https://mp.test/c"}},
+		&fakePremium{initPoint: "https://mp.test/sub"}, runner, quietLog,
+	).Register(r, fakeAuth)
+	return r
+}
+
+func doWithKey(r http.Handler, path, body, key string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(idempotencyKeyHeader, key)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
 }
 
 func do(r http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -391,8 +425,58 @@ func TestCancelPremiumWithoutSubscription(t *testing.T) {
 	assertError(t, w, http.StatusConflict, CodeNoLiveSubscription)
 }
 
+const (
+	pointsCheckoutPath  = "/v1/billing/points/checkout"
+	premiumCheckoutPath = "/v1/billing/premium/checkout"
+	pointsCheckoutBody  = `{"package_id":"points_100"}`
+)
+
+func TestCheckoutPassesTheIdempotencyKey(t *testing.T) {
+	cases := map[string]struct {
+		path, body, fingerprint string
+		scope                   model.CheckoutScope
+		wantURL                 string
+	}{
+		"points":  {pointsCheckoutPath, pointsCheckoutBody, "points_100", model.CheckoutScopePoints, "https://mp.test/c"},
+		"premium": {premiumCheckoutPath, `{"payer_email":"ana@test.com"}`, premiumFingerprint, model.CheckoutScopePremium, "https://mp.test/sub"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			runner := &fakeRunner{}
+			w := doWithKey(routerWithRunner(runner), tc.path, tc.body, "key-1")
+
+			if w.Code != http.StatusCreated {
+				t.Fatalf("status = %d, body %s", w.Code, w.Body)
+			}
+			if got := decode[checkoutResponse](t, w).CheckoutURL; got != tc.wantURL {
+				t.Errorf("url = %q, want %q", got, tc.wantURL)
+			}
+			want := model.CheckoutKey{UserID: userID, Scope: tc.scope, Key: "key-1"}
+			if runner.key != want || runner.fingerprint != tc.fingerprint {
+				t.Errorf("runner got %+v %q, want %+v %q", runner.key, runner.fingerprint, want, tc.fingerprint)
+			}
+		})
+	}
+}
+
+func TestCheckoutIdempotencyErrors(t *testing.T) {
+	for _, path := range []string{pointsCheckoutPath, premiumCheckoutPath} {
+		t.Run(path, func(t *testing.T) {
+			r := routerWithRunner(&fakeRunner{err: service.ErrCheckoutInProgress})
+			assertError(t, doWithKey(r, path, pointsCheckoutBody, "k"), http.StatusConflict, CodeCheckoutInProgress)
+
+			r = routerWithRunner(&fakeRunner{err: service.ErrCheckoutKeyReused})
+			assertError(t, doWithKey(r, path, pointsCheckoutBody, "k"), http.StatusUnprocessableEntity, CodeIdempotencyKeyReused)
+
+			r = routerWithRunner(&fakeRunner{})
+			tooLong := strings.Repeat("k", maxIdempotencyKeyLength+1)
+			assertError(t, doWithKey(r, path, pointsCheckoutBody, tooLong), http.StatusBadRequest, CodeInvalidRequest)
+		})
+	}
+}
+
 func TestNewBillingHandlerDefaultsLogger(t *testing.T) {
-	if h := NewBillingHandler(&fakePoints{}, &fakePremium{}, nil); h.log == nil {
+	if h := NewBillingHandler(&fakePoints{}, &fakePremium{}, &fakeRunner{}, nil); h.log == nil {
 		t.Error("logger should default to slog.Default")
 	}
 }

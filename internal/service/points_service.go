@@ -34,6 +34,10 @@ const (
 	pendingBatch        = 200
 	detailAbandoned     = "abandoned"
 	detailNoOrder       = "order_not_created"
+
+	// A card chargeback can arrive months after the payment.
+	reversalCheckWindow = 180 * 24 * time.Hour
+	paidBatch           = 200
 )
 
 type PointsPackage struct {
@@ -73,6 +77,8 @@ type PointsStore interface {
 	GetPurchase(ctx context.Context, id uuid.UUID) (model.PointPurchase, error)
 	ListPurchases(ctx context.Context, userID uuid.UUID, limit int) ([]model.PointPurchase, error)
 	ListPendingPurchases(ctx context.Context, createdBefore time.Time, limit int) ([]model.PointPurchase, error)
+	ListPaidPurchasesToRecheck(ctx context.Context, createdAfter time.Time, limit int) ([]model.PointPurchase, error)
+	MarkReversalChecked(ctx context.Context, purchaseID uuid.UUID) error
 	MarkUnpaid(ctx context.Context, purchaseID uuid.UUID, status model.PurchaseStatus, detail string) (bool, error)
 	CreditPurchase(ctx context.Context, purchaseID uuid.UUID, statusDetail string) (bool, error)
 	ReversePurchase(ctx context.Context, purchaseID uuid.UUID, reason model.LedgerReason) (int64, error)
@@ -270,6 +276,27 @@ func (s *PointsService) ReconcilePending(ctx context.Context) (int, error) {
 			if _, err := s.store.MarkUnpaid(ctx, p.ID, model.PurchaseStatusExpired, detailAbandoned); err != nil {
 				log.Error("could not expire abandoned purchase", "error", err)
 			}
+		}
+	}
+	return len(purchases), nil
+}
+
+// ReconcilePaid asks MP about paid purchases, so the points are taken back
+// even if the notification of a refund or chargeback was lost. A purchase that
+// fails stays first in line for the next run.
+func (s *PointsService) ReconcilePaid(ctx context.Context) (int, error) {
+	purchases, err := s.store.ListPaidPurchasesToRecheck(ctx, s.now().Add(-reversalCheckWindow), paidBatch)
+	if err != nil {
+		return 0, err
+	}
+	for _, p := range purchases {
+		log := s.log.With("purchase_id", p.ID, "order_id", p.MPOrderID)
+		if err := s.ProcessOrderNotification(ctx, p.MPOrderID); err != nil {
+			log.Error("could not recheck paid purchase", "error", err)
+			continue
+		}
+		if err := s.store.MarkReversalChecked(ctx, p.ID); err != nil {
+			log.Error("could not mark paid purchase as checked", "error", err)
 		}
 	}
 	return len(purchases), nil

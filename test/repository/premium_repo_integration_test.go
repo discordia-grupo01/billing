@@ -329,6 +329,38 @@ func TestRevokeCharge(t *testing.T) {
 	}
 }
 
+// The reconciliation can store the refunded status before anything revokes.
+func TestRevokeChargeAfterApplyChargeStoredTheReversal(t *testing.T) {
+	repo, pool := newPremiumRepo(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	s := newSubscription(t, repo, userID, model.SubscriptionStatusAuthorized)
+	c := approvedCharge(s.MPPreapprovalID, "ap1", time.Now().UTC().Truncate(time.Second))
+	if _, err := repo.ApplyCharge(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+
+	c.PaymentStatus = "refunded"
+	if _, err := repo.ApplyCharge(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	_, revoked, err := repo.RevokeCharge(ctx, c.PaymentID, "refunded")
+	if err != nil || !revoked {
+		t.Fatalf("RevokeCharge = %v, %v; want revoked", revoked, err)
+	}
+	if p, _ := repo.GetPremium(ctx, userID); p.Active(time.Now()) || p.Renews {
+		t.Errorf("after revoke: %+v", p)
+	}
+
+	evts := len(premiumEvents(t, pool, userID))
+	if _, again, err := repo.RevokeCharge(ctx, c.PaymentID, "charged_back"); err != nil || again {
+		t.Errorf("second revoke = %v, %v; want no-op", again, err)
+	}
+	if got := len(premiumEvents(t, pool, userID)); got != evts {
+		t.Errorf("second revoke wrote an event: %d -> %d", evts, got)
+	}
+}
+
 func TestRevokeChargeThatNeverExtended(t *testing.T) {
 	repo, _ := newPremiumRepo(t)
 	ctx := context.Background()
@@ -391,13 +423,52 @@ func TestListSubscriptionsToReconcile(t *testing.T) {
 	newSubscription(t, repo, uuid.New(), model.SubscriptionStatusPaused)
 
 	subs, err := repo.ListSubscriptionsToReconcile(ctx, 10)
-	if err != nil || len(subs) != 2 {
-		t.Fatalf("got %d, %v; want pending + authorized", len(subs), err)
+	if err != nil || len(subs) != 3 {
+		t.Fatalf("got %d, %v; want pending + authorized + paused", len(subs), err)
 	}
 	for _, s := range subs {
-		if s.MPStatus != "pending" && s.MPStatus != "authorized" {
-			t.Errorf("unexpected status %s", s.MPStatus)
+		if s.MPStatus == model.SubscriptionStatusCancelled {
+			t.Errorf("a cancelled subscription that never paid should be left out: %+v", s)
 		}
+	}
+}
+
+func TestListSubscriptionsToReconcileCancelledWithPaidPeriod(t *testing.T) {
+	repo, pool := newPremiumRepo(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	s := newSubscription(t, repo, userID, model.SubscriptionStatusAuthorized)
+	c := approvedCharge(s.MPPreapprovalID, "ap1", time.Now().UTC())
+	if _, err := repo.ApplyCharge(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SyncSubscriptionStatus(ctx, s.MPPreapprovalID, model.SubscriptionStatusCancelled); err != nil {
+		t.Fatal(err)
+	}
+
+	listed := func() bool {
+		t.Helper()
+		subs, err := repo.ListSubscriptionsToReconcile(ctx, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, got := range subs {
+			if got.MPPreapprovalID == s.MPPreapprovalID {
+				return true
+			}
+		}
+		return false
+	}
+	if !listed() {
+		t.Error("should be listed while the paid period runs")
+	}
+
+	if _, err := pool.Exec(ctx,
+		`UPDATE premium_status SET premium_until = now() - interval '1 minute' WHERE user_id = $1`, userID); err != nil {
+		t.Fatal(err)
+	}
+	if listed() {
+		t.Error("should not be listed after the paid period ended")
 	}
 }
 
@@ -439,5 +510,73 @@ func TestEndPremiumPeriod(t *testing.T) {
 	}
 	if ended, err := repo.EndPremiumPeriod(ctx, uuid.New()); err != nil || ended {
 		t.Errorf("EndPremiumPeriod for a user without Premium = %v, %v; want false", ended, err)
+	}
+}
+
+func TestRepublishAll(t *testing.T) {
+	repo, pool := newPremiumRepo(t)
+	ctx := context.Background()
+
+	paying := uuid.New()
+	s := newSubscription(t, repo, paying, model.SubscriptionStatusAuthorized)
+	if _, err := repo.ApplyCharge(ctx, approvedCharge(s.MPPreapprovalID, "ap1", time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	expired := uuid.New()
+	s = newSubscription(t, repo, expired, model.SubscriptionStatusAuthorized)
+	if _, err := repo.ApplyCharge(ctx, approvedCharge(s.MPPreapprovalID, "ap2", time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE premium_status SET premium_until = now() - interval '1 minute' WHERE user_id = $1`, expired); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := repo.GetPremium(ctx, paying)
+
+	n, err := repo.RepublishAll(ctx)
+	if err != nil || n != 2 {
+		t.Fatalf("RepublishAll = %d, %v; want 2", n, err)
+	}
+
+	evts := premiumEvents(t, pool, paying)
+	last := evts[len(evts)-1]
+	if !last.Active || last.UserID != paying.String() || last.Version != before.Version+1 {
+		t.Errorf("paying user event = %+v, previous version %d", last, before.Version)
+	}
+	if last.PremiumUntil == nil || !last.PremiumUntil.Equal(*before.PremiumUntil) {
+		t.Errorf("premium_until = %v, want %v", last.PremiumUntil, before.PremiumUntil)
+	}
+
+	evts = premiumEvents(t, pool, expired)
+	if evts[len(evts)-1].Active {
+		t.Error("a user whose period passed must be republished as inactive")
+	}
+	if p, _ := repo.GetPremium(ctx, expired); p.ActiveEmitted {
+		t.Error("active_emitted should follow what the event said")
+	}
+	if n, _ := repo.ExpireDue(ctx, 10); n != 0 {
+		t.Errorf("ExpireDue after republishing = %d, want 0: it would emit twice", n)
+	}
+
+	if n, err := repo.RepublishAll(ctx); err != nil || n != 2 {
+		t.Fatalf("second RepublishAll = %d, %v; want 2", n, err)
+	}
+	if p, _ := repo.GetPremium(ctx, paying); p.Version != before.Version+2 {
+		t.Errorf("version after running twice = %d, want %d", p.Version, before.Version+2)
+	}
+}
+
+func TestRepublishAllWithNobody(t *testing.T) {
+	repo, _ := newPremiumRepo(t)
+	if n, err := repo.RepublishAll(context.Background()); err != nil || n != 0 {
+		t.Fatalf("RepublishAll = %d, %v; want 0", n, err)
+	}
+}
+
+func TestRepublishAllDBError(t *testing.T) {
+	repo, pool := newPremiumRepo(t)
+	pool.Close()
+	if _, err := repo.RepublishAll(context.Background()); err == nil {
+		t.Fatal("RepublishAll should fail with a closed pool")
 	}
 }

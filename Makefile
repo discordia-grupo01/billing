@@ -1,4 +1,4 @@
-.PHONY: run test test-integration build migrate migrate-down
+.PHONY: run test test-integration build migrate migrate-down republish-premium
 
 -include .env
 export
@@ -42,3 +42,10 @@ migrate:
 migrate-down:
 	@echo "Revirtiendo la ultima migracion en $(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
 	@$(MIGRATE) down 1
+
+# Vuelve a publicar el estado Premium de todos los usuarios, para los consumers
+# cuya cola no existia cuando salieron los eventos. Escribe en el outbox de esta
+# base: los publica el relay del billing que este corriendo contra ella.
+republish-premium:
+	@echo "Republicando Premium en $(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
+	@go run ./cmd/republish-premium

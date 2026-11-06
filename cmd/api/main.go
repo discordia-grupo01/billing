@@ -62,14 +62,13 @@ func main() {
 
 	logger := slog.Default()
 	returnURL := cfg.CheckoutReturnURL + "/billing/return"
-	points := service.NewPointsService(repository.NewPointsRepository(pool), gateway, service.ReturnURLs{
-		Success: returnURL + "?kind=points&result=success",
-		Failure: returnURL + "?kind=points&result=failure",
-		Pending: returnURL + "?kind=points&result=pending",
-	}, logger)
+	appReturnURL := cfg.CheckoutReturnURL + "/app-link/billing/return"
+	points := service.NewPointsService(repository.NewPointsRepository(pool), gateway, pointsReturnURLs(returnURL), logger).
+		WithAppReturnURLs(pointsReturnURLs(appReturnURL))
 	premiumRepo := repository.NewPremiumRepository(pool)
 	premium := service.NewPremiumService(premiumRepo, gateway, service.PremiumConfig{
 		BackURL:        returnURL + "?kind=premium",
+		AppBackURL:     appReturnURL + "?kind=premium",
 		TestPayerEmail: cfg.MPTestPayerEmail,
 	}, logger)
 
@@ -143,4 +142,12 @@ func main() {
 	}
 	waitJobs()
 	<-consumerDone
+}
+
+func pointsReturnURLs(base string) service.ReturnURLs {
+	return service.ReturnURLs{
+		Success: base + "?kind=points&result=success",
+		Failure: base + "?kind=points&result=failure",
+		Pending: base + "?kind=points&result=pending",
+	}
 }

@@ -52,12 +52,40 @@ func approvedCharge(id string, debit time.Time) model.Charge {
 	}
 }
 
+func TestPremiumStartCheckoutBackURL(t *testing.T) {
+	cfg := PremiumConfig{
+		BackURL:    "https://discordia.test/billing/return?kind=premium",
+		AppBackURL: "https://discordia.test/app-link/billing/return?kind=premium",
+	}
+	cases := map[string]struct {
+		cfg    PremiumConfig
+		target ReturnTarget
+		want   string
+	}{
+		"app":                 {cfg, ReturnToApp, cfg.AppBackURL},
+		"web":                 {cfg, ReturnToWeb, cfg.BackURL},
+		"app without app URL": {PremiumConfig{BackURL: cfg.BackURL}, ReturnToApp, cfg.BackURL},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			gw := &fakeGateway{sub: model.Subscription{ID: "PRE1", Status: "pending", InitPoint: "https://mp.test/sub"}}
+			s := newPremiumService(newFakePremiumStore(premiumNow), gw, tc.cfg)
+			if _, err := s.StartCheckout(context.Background(), userID, "ana@test.com", tc.target); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if gw.subReq.BackURL != tc.want {
+				t.Errorf("back URL = %q, want %q", gw.subReq.BackURL, tc.want)
+			}
+		})
+	}
+}
+
 func TestPremiumStartCheckout(t *testing.T) {
 	store := newFakePremiumStore(premiumNow)
 	gw := &fakeGateway{sub: model.Subscription{ID: "PRE1", Status: "pending", InitPoint: "https://mp.test/sub"}}
 	s := newPremiumService(store, gw, PremiumConfig{BackURL: "https://discordia.test/return?kind=premium"})
 
-	url, err := s.StartCheckout(context.Background(), userID, "ana@test.com")
+	url, err := s.StartCheckout(context.Background(), userID, "ana@test.com", ReturnToWeb)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,7 +111,7 @@ func TestPremiumStartCheckoutUsesTestPayerEmail(t *testing.T) {
 	gw := &fakeGateway{sub: model.Subscription{ID: "PRE1", Status: "pending"}}
 	s := newPremiumService(newFakePremiumStore(premiumNow), gw, PremiumConfig{TestPayerEmail: "test_user@testuser.com"})
 
-	if _, err := s.StartCheckout(context.Background(), userID, "ana@test.com"); err != nil {
+	if _, err := s.StartCheckout(context.Background(), userID, "ana@test.com", ReturnToWeb); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if gw.subReq.PayerEmail != "test_user@testuser.com" {
@@ -105,7 +133,7 @@ func TestPremiumStartCheckoutLatestSubscription(t *testing.T) {
 			gw := &fakeGateway{sub: model.Subscription{ID: "PRE1", Status: "pending"}}
 			s := newPremiumService(store, gw, PremiumConfig{})
 
-			_, err := s.StartCheckout(context.Background(), userID, "ana@test.com")
+			_, err := s.StartCheckout(context.Background(), userID, "ana@test.com", ReturnToWeb)
 			if !errors.Is(err, wantErr) {
 				t.Fatalf("err = %v, want %v", err, wantErr)
 			}
@@ -120,7 +148,7 @@ func TestPremiumStartCheckoutRequiresPayerEmail(t *testing.T) {
 	gw := &fakeGateway{sub: mpSub("PRE1", "pending")}
 	s := newPremiumService(newFakePremiumStore(premiumNow), gw, PremiumConfig{})
 
-	if _, err := s.StartCheckout(context.Background(), userID, ""); !errors.Is(err, ErrPayerEmailRequired) {
+	if _, err := s.StartCheckout(context.Background(), userID, "", ReturnToWeb); !errors.Is(err, ErrPayerEmailRequired) {
 		t.Fatalf("err = %v, want ErrPayerEmailRequired", err)
 	}
 	if gw.subReq.ExternalReference != "" {
@@ -134,7 +162,7 @@ func TestPremiumStartCheckoutErrors(t *testing.T) {
 			store := newFakePremiumStore(premiumNow)
 			store.failOn = map[string]error{step: errBoom}
 			s := newPremiumService(store, &fakeGateway{sub: mpSub("PRE1", "pending")}, PremiumConfig{})
-			if _, err := s.StartCheckout(context.Background(), userID, "ana@test.com"); !errors.Is(err, errBoom) {
+			if _, err := s.StartCheckout(context.Background(), userID, "ana@test.com", ReturnToWeb); !errors.Is(err, errBoom) {
 				t.Errorf("err = %v, want errBoom", err)
 			}
 		})
@@ -142,7 +170,7 @@ func TestPremiumStartCheckoutErrors(t *testing.T) {
 	t.Run("gateway", func(t *testing.T) {
 		store := newFakePremiumStore(premiumNow)
 		s := newPremiumService(store, &fakeGateway{failOn: map[string]error{"CreateSubscription": errBoom}}, PremiumConfig{})
-		if _, err := s.StartCheckout(context.Background(), userID, "ana@test.com"); !errors.Is(err, errBoom) {
+		if _, err := s.StartCheckout(context.Background(), userID, "ana@test.com", ReturnToWeb); !errors.Is(err, errBoom) {
 			t.Errorf("err = %v, want errBoom", err)
 		}
 		if len(store.subs) != 0 {

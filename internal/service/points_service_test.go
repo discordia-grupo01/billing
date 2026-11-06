@@ -98,7 +98,7 @@ func TestStartCheckout(t *testing.T) {
 
 	pkg := pointsPackages[len(pointsPackages)-1]
 	got, err := s.StartCheckout(context.Background(), userID, pkg.ID,
-		CheckoutPayer{Email: "ana@test.com", FirstName: "Ana", LastName: "Pérez"})
+		CheckoutPayer{Email: "ana@test.com", FirstName: "Ana", LastName: "Pérez"}, ReturnToWeb)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -125,6 +125,36 @@ func TestStartCheckout(t *testing.T) {
 	}
 }
 
+func TestStartCheckoutReturnsToTheApp(t *testing.T) {
+	appURLs := ReturnURLs{
+		Success: "https://discordia.test/app-link/billing/return?status=success",
+		Failure: "https://discordia.test/app-link/billing/return?status=failure",
+		Pending: "https://discordia.test/app-link/billing/return?status=pending",
+	}
+	cases := map[string]struct {
+		service *PointsService
+		target  ReturnTarget
+		want    string
+	}{
+		"app":                 {newPointsService(newFakePointsStore(), &fakeGateway{}).WithAppReturnURLs(appURLs), ReturnToApp, "https://discordia.test/app-link/billing/return"},
+		"web":                 {newPointsService(newFakePointsStore(), &fakeGateway{}).WithAppReturnURLs(appURLs), ReturnToWeb, "https://discordia.test/return"},
+		"app without app URL": {newPointsService(newFakePointsStore(), &fakeGateway{}), ReturnToApp, "https://discordia.test/return"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			gw := &fakeGateway{order: model.PointsOrder{ID: "ORD1", CheckoutURL: "https://mp.test/checkout"}}
+			tc.service.gateway = gw
+			if _, err := tc.service.StartCheckout(context.Background(), userID, pointsPackages[0].ID, CheckoutPayer{}, tc.target); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			wantPrefix := tc.want + "?purchase_id=" + purchaseID.String() + "&status="
+			if gw.orderReq.SuccessURL != wantPrefix+"success" || gw.orderReq.FailureURL != wantPrefix+"failure" || gw.orderReq.PendingURL != wantPrefix+"pending" {
+				t.Errorf("unexpected return URLs: %+v", gw.orderReq)
+			}
+		})
+	}
+}
+
 func TestWithPurchaseIDKeepsInvalidURLs(t *testing.T) {
 	for _, raw := range []string{"", "://bad"} {
 		if got := withPurchaseID(raw, "p1"); got != raw {
@@ -137,7 +167,7 @@ func TestStartCheckoutUnknownPackage(t *testing.T) {
 	store := newFakePointsStore()
 	s := newPointsService(store, &fakeGateway{})
 
-	_, err := s.StartCheckout(context.Background(), userID, "points_does_not_exist", CheckoutPayer{})
+	_, err := s.StartCheckout(context.Background(), userID, "points_does_not_exist", CheckoutPayer{}, ReturnToWeb)
 	if !errors.Is(err, ErrUnknownPackage) {
 		t.Fatalf("err = %v, want ErrUnknownPackage", err)
 	}
@@ -150,7 +180,7 @@ func TestStartCheckoutGatewayFailureLeavesPendingPurchase(t *testing.T) {
 	store := newFakePointsStore()
 	s := newPointsService(store, &fakeGateway{createErr: errBoom})
 
-	if _, err := s.StartCheckout(context.Background(), userID, pointsPackages[0].ID, CheckoutPayer{}); !errors.Is(err, errBoom) {
+	if _, err := s.StartCheckout(context.Background(), userID, pointsPackages[0].ID, CheckoutPayer{}, ReturnToWeb); !errors.Is(err, errBoom) {
 		t.Fatalf("err = %v, want errBoom", err)
 	}
 	p := store.purchases[purchaseID]
@@ -165,7 +195,7 @@ func TestStartCheckoutStoreFailures(t *testing.T) {
 	gw := &fakeGateway{}
 	s := newPointsService(store, gw)
 
-	if _, err := s.StartCheckout(context.Background(), userID, pointsPackages[0].ID, CheckoutPayer{}); !errors.Is(err, errBoom) {
+	if _, err := s.StartCheckout(context.Background(), userID, pointsPackages[0].ID, CheckoutPayer{}, ReturnToWeb); !errors.Is(err, errBoom) {
 		t.Fatalf("CreatePurchase failure: err = %v", err)
 	}
 	if gw.orderReq.IdempotencyKey != "" {
@@ -175,7 +205,7 @@ func TestStartCheckoutStoreFailures(t *testing.T) {
 	// SetOrderID fails after the order was created.
 	store = newFakePointsStore()
 	s = newPointsService(&failOnSetOrderID{store}, &fakeGateway{order: model.PointsOrder{ID: "ORD1"}})
-	if _, err := s.StartCheckout(context.Background(), userID, pointsPackages[0].ID, CheckoutPayer{}); !errors.Is(err, errBoom) {
+	if _, err := s.StartCheckout(context.Background(), userID, pointsPackages[0].ID, CheckoutPayer{}, ReturnToWeb); !errors.Is(err, errBoom) {
 		t.Fatalf("SetOrderID failure: err = %v", err)
 	}
 }

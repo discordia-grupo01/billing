@@ -86,6 +86,13 @@ type PointsStore interface {
 	ListLedger(ctx context.Context, userID uuid.UUID, limit int) ([]model.LedgerEntry, error)
 }
 
+type ReturnTarget string
+
+const (
+	ReturnToWeb ReturnTarget = "web"
+	ReturnToApp ReturnTarget = "app"
+)
+
 // ReturnURLs are where Mercado Pago sends the buyer back after paying. Each
 // checkout adds purchase_id to them, so the return page knows what to poll.
 type ReturnURLs struct {
@@ -109,6 +116,7 @@ type PointsService struct {
 	store   PointsStore
 	gateway PaymentGateway
 	urls    ReturnURLs
+	appURLs ReturnURLs
 	log     *slog.Logger
 	newID   func() uuid.UUID
 	now     func() time.Time
@@ -121,6 +129,18 @@ func NewPointsService(store PointsStore, gateway PaymentGateway, urls ReturnURLs
 	return &PointsService{store: store, gateway: gateway, urls: urls, log: logger, newID: uuid.New, now: time.Now}
 }
 
+func (s *PointsService) WithAppReturnURLs(urls ReturnURLs) *PointsService {
+	s.appURLs = urls
+	return s
+}
+
+func (s *PointsService) returnURLs(target ReturnTarget) ReturnURLs {
+	if target == ReturnToApp && s.appURLs.Success != "" {
+		return s.appURLs
+	}
+	return s.urls
+}
+
 func (s *PointsService) Packages() []PointsPackage {
 	return slices.Clone(pointsPackages)
 }
@@ -128,7 +148,7 @@ func (s *PointsService) Packages() []PointsPackage {
 // StartCheckout creates the purchase and its Mercado Pago order. The
 // purchase id is also the order's external_reference and idempotency key.
 // If the order can't be created the purchase stays pending without an order.
-func (s *PointsService) StartCheckout(ctx context.Context, userID uuid.UUID, packageID string, payer CheckoutPayer) (Checkout, error) {
+func (s *PointsService) StartCheckout(ctx context.Context, userID uuid.UUID, packageID string, payer CheckoutPayer, returnTo ReturnTarget) (Checkout, error) {
 	i := slices.IndexFunc(pointsPackages, func(p PointsPackage) bool { return p.ID == packageID })
 	if i < 0 {
 		return Checkout{}, fmt.Errorf("%w: %q", ErrUnknownPackage, packageID)
@@ -147,6 +167,7 @@ func (s *PointsService) StartCheckout(ctx context.Context, userID uuid.UUID, pac
 	}
 
 	ref := purchase.ID.String()
+	urls := s.returnURLs(returnTo)
 	order, err := s.gateway.CreatePointsOrder(ctx, model.PointsOrderRequest{
 		IdempotencyKey:    ref,
 		ExternalReference: ref,
@@ -157,9 +178,9 @@ func (s *PointsService) StartCheckout(ctx context.Context, userID uuid.UUID, pac
 		Title:             pkg.Title,
 		Description:       pkg.Description,
 		AmountCents:       pkg.AmountCents,
-		SuccessURL:        withPurchaseID(s.urls.Success, ref),
-		FailureURL:        withPurchaseID(s.urls.Failure, ref),
-		PendingURL:        withPurchaseID(s.urls.Pending, ref),
+		SuccessURL:        withPurchaseID(urls.Success, ref),
+		FailureURL:        withPurchaseID(urls.Failure, ref),
+		PendingURL:        withPurchaseID(urls.Pending, ref),
 	})
 	if err != nil {
 		return Checkout{}, err

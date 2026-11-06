@@ -19,7 +19,7 @@ import (
 // PointsUseCases is what the points routes need from service.PointsService.
 type PointsUseCases interface {
 	Packages() []service.PointsPackage
-	StartCheckout(ctx context.Context, userID uuid.UUID, packageID string, payer service.CheckoutPayer) (service.Checkout, error)
+	StartCheckout(ctx context.Context, userID uuid.UUID, packageID string, payer service.CheckoutPayer, returnTo service.ReturnTarget) (service.Checkout, error)
 	GetPurchase(ctx context.Context, userID, purchaseID uuid.UUID) (model.PointPurchase, error)
 	Balance(ctx context.Context, userID uuid.UUID) (int64, error)
 	ListPurchases(ctx context.Context, userID uuid.UUID, limit int) ([]model.PointPurchase, error)
@@ -28,7 +28,7 @@ type PointsUseCases interface {
 
 // PremiumUseCases is what the Premium routes need from service.PremiumService.
 type PremiumUseCases interface {
-	StartCheckout(ctx context.Context, userID uuid.UUID, payerEmail string) (string, error)
+	StartCheckout(ctx context.Context, userID uuid.UUID, payerEmail string, returnTo service.ReturnTarget) (string, error)
 	Cancel(ctx context.Context, userID uuid.UUID) (service.PremiumView, error)
 	State(ctx context.Context, userID uuid.UUID, refresh bool) (service.PremiumView, error)
 }
@@ -90,6 +90,21 @@ func (h *BillingHandler) listPackages(c *gin.Context) {
 type pointsCheckoutRequest struct {
 	PackageID  string `json:"package_id" binding:"required"`
 	PayerEmail string `json:"payer_email" binding:"omitempty,email"`
+	ReturnTo   string `json:"return_to" binding:"omitempty,oneof=web app"`
+}
+
+func returnTarget(returnTo string) service.ReturnTarget {
+	if returnTo == string(service.ReturnToApp) {
+		return service.ReturnToApp
+	}
+	return service.ReturnToWeb
+}
+
+func checkoutFingerprint(base string, target service.ReturnTarget) string {
+	if target == service.ReturnToApp {
+		return base + "|app"
+	}
+	return base
 }
 
 type checkoutResponse struct {
@@ -108,10 +123,11 @@ func (h *BillingHandler) startPointsCheckout(c *gin.Context) {
 		return
 	}
 	userID := middleware.UserID(c)
+	target := returnTarget(req.ReturnTo)
 	checkout, err := h.checkouts.Run(c.Request.Context(),
-		model.CheckoutKey{UserID: userID, Scope: model.CheckoutScopePoints, Key: key}, req.PackageID,
+		model.CheckoutKey{UserID: userID, Scope: model.CheckoutScopePoints, Key: key}, checkoutFingerprint(req.PackageID, target),
 		func(ctx context.Context) (service.Checkout, error) {
-			return h.points.StartCheckout(ctx, userID, req.PackageID, service.CheckoutPayer{Email: req.PayerEmail})
+			return h.points.StartCheckout(ctx, userID, req.PackageID, service.CheckoutPayer{Email: req.PayerEmail}, target)
 		})
 	if err != nil {
 		writeServiceError(c, h.log, err)
@@ -254,6 +270,7 @@ func (h *BillingHandler) getPremium(c *gin.Context) {
 
 type premiumCheckoutRequest struct {
 	PayerEmail string `json:"payer_email" binding:"omitempty,email"`
+	ReturnTo   string `json:"return_to" binding:"omitempty,oneof=web app"`
 }
 
 func (h *BillingHandler) startPremiumCheckout(c *gin.Context) {
@@ -270,10 +287,11 @@ func (h *BillingHandler) startPremiumCheckout(c *gin.Context) {
 		return
 	}
 	userID := middleware.UserID(c)
+	target := returnTarget(req.ReturnTo)
 	checkout, err := h.checkouts.Run(c.Request.Context(),
-		model.CheckoutKey{UserID: userID, Scope: model.CheckoutScopePremium, Key: key}, premiumFingerprint,
+		model.CheckoutKey{UserID: userID, Scope: model.CheckoutScopePremium, Key: key}, checkoutFingerprint(premiumFingerprint, target),
 		func(ctx context.Context) (service.Checkout, error) {
-			url, err := h.premium.StartCheckout(ctx, userID, req.PayerEmail)
+			url, err := h.premium.StartCheckout(ctx, userID, req.PayerEmail, target)
 			return service.Checkout{CheckoutURL: url}, err
 		})
 	if err != nil {

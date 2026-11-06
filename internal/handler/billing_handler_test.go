@@ -30,6 +30,7 @@ var (
 type fakePoints struct {
 	packageID string
 	payer     service.CheckoutPayer
+	returnTo  service.ReturnTarget
 	checkout  service.Checkout
 	purchase  model.PointPurchase
 	balance   int64
@@ -51,11 +52,11 @@ func (f *fakePoints) Packages() []service.PointsPackage {
 	return []service.PointsPackage{{ID: "points_100", Points: 100, AmountCents: 1_000_00, Title: "100 puntos"}}
 }
 
-func (f *fakePoints) StartCheckout(_ context.Context, uid uuid.UUID, packageID string, payer service.CheckoutPayer) (service.Checkout, error) {
+func (f *fakePoints) StartCheckout(_ context.Context, uid uuid.UUID, packageID string, payer service.CheckoutPayer, returnTo service.ReturnTarget) (service.Checkout, error) {
 	if uid != userID {
 		return service.Checkout{}, errors.New("wrong user")
 	}
-	f.packageID, f.payer = packageID, payer
+	f.packageID, f.payer, f.returnTo = packageID, payer, returnTo
 	return f.checkout, f.fail("StartCheckout")
 }
 
@@ -85,14 +86,15 @@ func (f *fakePoints) ListLedger(_ context.Context, _ uuid.UUID, limit int) ([]mo
 
 type fakePremium struct {
 	payerEmail string
+	returnTo   service.ReturnTarget
 	refresh    bool
 	initPoint  string
 	view       service.PremiumView
 	err        error
 }
 
-func (f *fakePremium) StartCheckout(_ context.Context, _ uuid.UUID, payerEmail string) (string, error) {
-	f.payerEmail = payerEmail
+func (f *fakePremium) StartCheckout(_ context.Context, _ uuid.UUID, payerEmail string, returnTo service.ReturnTarget) (string, error) {
+	f.payerEmail, f.returnTo = payerEmail, returnTo
 	return f.initPoint, f.err
 }
 
@@ -212,8 +214,43 @@ func TestStartPointsCheckout(t *testing.T) {
 	if got.PurchaseID == nil || *got.PurchaseID != purchaseID || got.CheckoutURL != "https://mp.test/c" {
 		t.Errorf("unexpected response: %s", w.Body)
 	}
-	if points.packageID != "points_100" || points.payer.Email != "ana@test.com" {
-		t.Errorf("unexpected call: %q %+v", points.packageID, points.payer)
+	if points.packageID != "points_100" || points.payer.Email != "ana@test.com" || points.returnTo != service.ReturnToWeb {
+		t.Errorf("unexpected call: %q %+v %q", points.packageID, points.payer, points.returnTo)
+	}
+}
+
+func TestCheckoutReturnTo(t *testing.T) {
+	cases := map[string]struct {
+		body string
+		want service.ReturnTarget
+	}{
+		"app":     {`"return_to":"app"`, service.ReturnToApp},
+		"web":     {`"return_to":"web"`, service.ReturnToWeb},
+		"missing": {`"payer_email":"ana@test.com"`, service.ReturnToWeb},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			points := &fakePoints{checkout: service.Checkout{PurchaseID: purchaseID, CheckoutURL: "https://mp.test/c"}}
+			premium := &fakePremium{initPoint: "https://mp.test/sub"}
+			router := newRouter(points, premium)
+
+			if w := do(router, http.MethodPost, pointsCheckoutPath, `{"package_id":"points_100",`+tc.body+`}`); w.Code != http.StatusCreated {
+				t.Fatalf("points status = %d, body %s", w.Code, w.Body)
+			}
+			if w := do(router, http.MethodPost, premiumCheckoutPath, `{`+tc.body+`}`); w.Code != http.StatusCreated {
+				t.Fatalf("premium status = %d, body %s", w.Code, w.Body)
+			}
+			if points.returnTo != tc.want || premium.returnTo != tc.want {
+				t.Errorf("returnTo = %q / %q, want %q", points.returnTo, premium.returnTo, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckoutRejectsUnknownReturnTo(t *testing.T) {
+	for _, path := range []string{pointsCheckoutPath, premiumCheckoutPath} {
+		w := do(newRouter(&fakePoints{}, &fakePremium{}), http.MethodPost, path, `{"package_id":"points_100","return_to":"desktop"}`)
+		assertError(t, w, http.StatusBadRequest, CodeInvalidRequest)
 	}
 }
 
@@ -439,6 +476,9 @@ func TestCheckoutPassesTheIdempotencyKey(t *testing.T) {
 	}{
 		"points":  {pointsCheckoutPath, pointsCheckoutBody, "points_100", model.CheckoutScopePoints, "https://mp.test/c"},
 		"premium": {premiumCheckoutPath, `{"payer_email":"ana@test.com"}`, premiumFingerprint, model.CheckoutScopePremium, "https://mp.test/sub"},
+		// The same key must not return a checkout that goes back to the other client.
+		"points from the app":  {pointsCheckoutPath, `{"package_id":"points_100","return_to":"app"}`, "points_100|app", model.CheckoutScopePoints, "https://mp.test/c"},
+		"premium from the app": {premiumCheckoutPath, `{"return_to":"app"}`, premiumFingerprint + "|app", model.CheckoutScopePremium, "https://mp.test/sub"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

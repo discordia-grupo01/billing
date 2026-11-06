@@ -75,7 +75,8 @@ type PremiumStore interface {
 
 type PremiumConfig struct {
 	// Where MP sends the user back after authorizing the subscription.
-	BackURL string
+	BackURL    string
+	AppBackURL string
 	// Sandbox only: MP rejects subscriptions whose payer is not the test
 	// buyer, so this replaces the user's email when set.
 	TestPayerEmail string
@@ -96,6 +97,13 @@ func NewPremiumService(store PremiumStore, gateway PaymentGateway, cfg PremiumCo
 	return &PremiumService{store: store, gateway: gateway, cfg: cfg, log: logger, now: time.Now}
 }
 
+func (s *PremiumService) backURL(target ReturnTarget) string {
+	if target == ReturnToApp && s.cfg.AppBackURL != "" {
+		return s.cfg.AppBackURL
+	}
+	return s.cfg.BackURL
+}
+
 func isLive(mpStatus string) bool {
 	return mpStatus == model.SubscriptionStatusAuthorized || mpStatus == model.SubscriptionStatusPaused
 }
@@ -103,7 +111,7 @@ func isLive(mpStatus string) bool {
 // StartCheckout creates a pending subscription and returns the MP page where
 // the user enters the card. Premium starts with the first approved charge,
 // not here.
-func (s *PremiumService) StartCheckout(ctx context.Context, userID uuid.UUID, payerEmail string) (string, error) {
+func (s *PremiumService) StartCheckout(ctx context.Context, userID uuid.UUID, payerEmail string, returnTo ReturnTarget) (string, error) {
 	latest, err := s.store.LatestSubscription(ctx, userID)
 	if err != nil && !errors.Is(err, model.ErrNotFound) {
 		return "", err
@@ -124,7 +132,7 @@ func (s *PremiumService) StartCheckout(ctx context.Context, userID uuid.UUID, pa
 		Reason:            premiumReason,
 		AmountCents:       premiumPricePesos * 100,
 		CurrencyID:        premiumCurrency,
-		BackURL:           s.cfg.BackURL,
+		BackURL:           s.backURL(returnTo),
 	})
 	if err != nil {
 		return "", err

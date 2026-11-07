@@ -67,7 +67,9 @@ type PremiumStore interface {
 	ExpireDue(ctx context.Context, limit int) (int, error)
 	LatestSubscription(ctx context.Context, userID uuid.UUID) (model.SubscriptionRecord, error)
 	SyncSubscriptionStatus(ctx context.Context, preapprovalID, mpStatus string) (bool, error)
-	ApplyCharge(ctx context.Context, c model.Charge) (bool, error)
+	ApplyCharge(ctx context.Context, c model.Charge) (model.ChargeResult, error)
+	MarkRefundRequested(ctx context.Context, authorizedPaymentID string) error
+	PendingSubscriptions(ctx context.Context, userID uuid.UUID) ([]model.SubscriptionRecord, error)
 	RevokeCharge(ctx context.Context, paymentID, paymentStatus string) (model.Revocation, bool, error)
 	GetPremium(ctx context.Context, userID uuid.UUID) (model.Premium, error)
 	HasAppliedCharge(ctx context.Context, preapprovalID string) (bool, error)
@@ -119,6 +121,9 @@ func (s *PremiumService) StartCheckout(ctx context.Context, userID uuid.UUID, pa
 	if err == nil && isLive(latest.MPStatus) {
 		return "", ErrAlreadySubscribed
 	}
+	if err := s.closePendingCheckouts(ctx, userID); err != nil {
+		return "", err
+	}
 
 	if s.cfg.TestPayerEmail != "" {
 		payerEmail = s.cfg.TestPayerEmail
@@ -147,6 +152,37 @@ func (s *PremiumService) StartCheckout(ctx context.Context, userID uuid.UUID, pa
 		return "", err
 	}
 	return sub.InitPoint, nil
+}
+
+// closePendingCheckouts makes sure no earlier checkout can still be paid. A
+// pending one may already be authorized in MP if its webhook hasn't arrived:
+// then the user is subscribed. The rest are cancelled, so their links stop
+// working and paying in two tabs can't charge twice.
+func (s *PremiumService) closePendingCheckouts(ctx context.Context, userID uuid.UUID) error {
+	pending, err := s.store.PendingSubscriptions(ctx, userID)
+	if err != nil {
+		return err
+	}
+	for _, sub := range pending {
+		err := s.syncStatus(ctx, sub.MPPreapprovalID)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		record, err := s.store.GetSubscription(ctx, sub.MPPreapprovalID)
+		if err != nil {
+			return err
+		}
+		if isLive(record.MPStatus) {
+			return ErrAlreadySubscribed
+		}
+		if err := s.cancelIfPending(ctx, sub.MPPreapprovalID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Cancel stops the renewal. The user keeps Premium until premium_until: they
@@ -267,14 +303,28 @@ func (s *PremiumService) ProcessChargeNotification(ctx context.Context, chargeID
 
 // applyCharge stores a charge read from MP. A refunded or charged-back one
 // also ends Premium, so the reversal isn't lost if its webhook never arrives.
+// An approved charge of a duplicate subscription is refunded.
 func (s *PremiumService) applyCharge(ctx context.Context, c model.Charge) error {
-	if _, err := s.store.ApplyCharge(ctx, c); err != nil {
+	res, err := s.store.ApplyCharge(ctx, c)
+	if err != nil {
 		return err
+	}
+	if res.RefundPaymentID != "" {
+		return s.refundDuplicate(ctx, c, res.RefundPaymentID)
 	}
 	if c.PaymentID == "" || !isReversed(c.PaymentStatus) {
 		return nil
 	}
 	return s.revokeAndCancel(ctx, c.PaymentID, c.PaymentStatus)
+}
+
+func (s *PremiumService) refundDuplicate(ctx context.Context, c model.Charge, paymentID string) error {
+	s.log.Warn("refunding charge of duplicate subscription",
+		"preapproval_id", c.PreapprovalID, "authorized_payment_id", c.AuthorizedPaymentID, "payment_id", paymentID)
+	if err := s.gateway.RefundPayment(ctx, paymentID, "duplicate-charge-"+c.AuthorizedPaymentID); err != nil {
+		return err
+	}
+	return s.store.MarkRefundRequested(ctx, c.AuthorizedPaymentID)
 }
 
 func isReversed(paymentStatus string) bool {

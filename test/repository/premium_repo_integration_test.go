@@ -186,11 +186,11 @@ func TestApplyChargeExtendsOnce(t *testing.T) {
 	}
 	c := approvedCharge(s.MPPreapprovalID, "ap1", nov1)
 	extended, err := repo.ApplyCharge(ctx, c)
-	if err != nil || !extended {
+	if err != nil || !extended.Extended {
 		t.Fatalf("ApplyCharge = %v, %v", extended, err)
 	}
 	again, err := repo.ApplyCharge(ctx, c)
-	if err != nil || again {
+	if err != nil || again.Extended {
 		t.Errorf("second ApplyCharge = %v, %v; want no-op", again, err)
 	}
 
@@ -222,11 +222,11 @@ func TestApplyChargeConcurrentDeliveriesExtendOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ok, err := repo.ApplyCharge(ctx, c)
+			res, err := repo.ApplyCharge(ctx, c)
 			if err != nil {
 				t.Errorf("ApplyCharge: %v", err)
 			}
-			if ok {
+			if res.Extended {
 				mu.Lock()
 				extensions++
 				mu.Unlock()
@@ -256,8 +256,8 @@ func TestRenewalAndLateRetry(t *testing.T) {
 	// The December charge is rejected: premium_until does not move.
 	rejected := approvedCharge(s.MPPreapprovalID, "dec", dec1)
 	rejected.Status, rejected.PaymentStatus, rejected.RetryAttempt = "recycling", "rejected", 1
-	if ok, err := repo.ApplyCharge(ctx, rejected); err != nil || ok {
-		t.Fatalf("rejected charge = %v, %v; want not extended", ok, err)
+	if res, err := repo.ApplyCharge(ctx, rejected); err != nil || res.Extended {
+		t.Fatalf("rejected charge = %+v, %v; want not extended", res, err)
 	}
 	p, _ := repo.GetPremium(ctx, userID)
 	assertPremiumUntil(t, p, dec1)
@@ -266,8 +266,8 @@ func TestRenewalAndLateRetry(t *testing.T) {
 	dec5 := dec1.AddDate(0, 0, 4)
 	retry := approvedCharge(s.MPPreapprovalID, "dec", dec5)
 	retry.RetryAttempt = 2
-	if ok, err := repo.ApplyCharge(ctx, retry); err != nil || !ok {
-		t.Fatalf("retry = %v, %v; want extended", ok, err)
+	if res, err := repo.ApplyCharge(ctx, retry); err != nil || !res.Extended {
+		t.Fatalf("retry = %+v, %v; want extended", res, err)
 	}
 	p, _ = repo.GetPremium(ctx, userID)
 	assertPremiumUntil(t, p, dec5.AddDate(0, 1, 0))
@@ -285,6 +285,93 @@ func TestApplyChargeUnknownSubscription(t *testing.T) {
 	repo, _ := newPremiumRepo(t)
 	if _, err := repo.ApplyCharge(context.Background(), approvedCharge("missing", "ap", nov1)); !errors.Is(err, repository.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// Reproduces 2026-11-05: the user paid four checkouts at once. Only the live
+// subscription's charge gives Premium; the others ask for a refund until it
+// is recorded.
+func TestApplyChargeOfDuplicateSubscriptionAsksForRefund(t *testing.T) {
+	repo, pool := newPremiumRepo(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	dup := newSubscription(t, repo, userID, model.SubscriptionStatusPending)
+	live := newSubscription(t, repo, userID, model.SubscriptionStatusAuthorized)
+
+	if res, err := repo.ApplyCharge(ctx, approvedCharge(live.MPPreapprovalID, "ap-live", nov1)); err != nil || !res.Extended {
+		t.Fatalf("live charge = %+v, %v; want extended", res, err)
+	}
+	c := approvedCharge(dup.MPPreapprovalID, "ap-dup", nov1.Add(time.Minute))
+	res, err := repo.ApplyCharge(ctx, c)
+	if err != nil || res.Extended || res.RefundPaymentID != c.PaymentID {
+		t.Fatalf("duplicate charge = %+v, %v; want a refund of %s", res, err, c.PaymentID)
+	}
+	if res, err := repo.ApplyCharge(ctx, c); err != nil || res.RefundPaymentID != c.PaymentID {
+		t.Fatalf("redelivery before the refund = %+v, %v; want the refund asked again", res, err)
+	}
+
+	if err := repo.MarkRefundRequested(ctx, c.AuthorizedPaymentID); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := repo.ApplyCharge(ctx, c); err != nil || res != (model.ChargeResult{}) {
+		t.Fatalf("redelivery after the refund = %+v, %v; want a no-op", res, err)
+	}
+
+	// Still a duplicate once the live subscription is cancelled.
+	if _, err := repo.SyncSubscriptionStatus(ctx, live.MPPreapprovalID, model.SubscriptionStatusCancelled); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := repo.ApplyCharge(ctx, c); err != nil || res.Extended {
+		t.Fatalf("after cancelling the live one = %+v, %v; want not extended", res, err)
+	}
+
+	p, _ := repo.GetPremium(ctx, userID)
+	assertPremiumUntil(t, p, nov1.AddDate(0, 1, 0))
+	if ok, _ := repo.HasAppliedCharge(ctx, dup.MPPreapprovalID); ok {
+		t.Error("the duplicate charge was applied")
+	}
+	if evts := premiumEvents(t, pool, userID); len(evts) != 1 {
+		t.Errorf("got %d events, want only the live charge's", len(evts))
+	}
+}
+
+// A user who cancelled and subscribes again pays a new month: that one stacks.
+func TestApplyChargeAfterResubscribingExtends(t *testing.T) {
+	repo, _ := newPremiumRepo(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	old := newSubscription(t, repo, userID, model.SubscriptionStatusAuthorized)
+	if _, err := repo.ApplyCharge(ctx, approvedCharge(old.MPPreapprovalID, "ap-old", nov1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.SyncSubscriptionStatus(ctx, old.MPPreapprovalID, model.SubscriptionStatusCancelled); err != nil {
+		t.Fatal(err)
+	}
+	again := newSubscription(t, repo, userID, model.SubscriptionStatusAuthorized)
+
+	res, err := repo.ApplyCharge(ctx, approvedCharge(again.MPPreapprovalID, "ap-new", nov1.AddDate(0, 0, 10)))
+	if err != nil || !res.Extended || res.RefundPaymentID != "" {
+		t.Fatalf("ApplyCharge = %+v, %v; want extended", res, err)
+	}
+	p, _ := repo.GetPremium(ctx, userID)
+	assertPremiumUntil(t, p, nov1.AddDate(0, 2, 0))
+}
+
+func TestPendingSubscriptions(t *testing.T) {
+	repo, _ := newPremiumRepo(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	first := newSubscription(t, repo, userID, model.SubscriptionStatusPending)
+	newSubscription(t, repo, userID, model.SubscriptionStatusCancelled)
+	second := newSubscription(t, repo, userID, model.SubscriptionStatusPending)
+	newSubscription(t, repo, uuid.New(), model.SubscriptionStatusPending)
+
+	got, err := repo.PendingSubscriptions(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].MPPreapprovalID != first.MPPreapprovalID || got[1].MPPreapprovalID != second.MPPreapprovalID {
+		t.Errorf("pending = %+v", got)
 	}
 }
 

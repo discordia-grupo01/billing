@@ -156,9 +156,11 @@ func (r *PremiumRepository) SyncSubscriptionStatus(ctx context.Context, preappro
 // ApplyCharge stores the latest state of a monthly charge. If MP collected
 // it and it was never applied, premium_until moves one month forward from
 // max(premium_until, debit_date), so a late retry reactivates from the day it
-// was paid. Returns whether Premium was extended.
-func (r *PremiumRepository) ApplyCharge(ctx context.Context, c model.Charge) (bool, error) {
-	extended := false
+// was paid. A charge of a subscription that isn't the user's live one is a
+// double charge: it is marked duplicate instead, and the result asks for its
+// refund until MarkRefundRequested.
+func (r *PremiumRepository) ApplyCharge(ctx context.Context, c model.Charge) (model.ChargeResult, error) {
+	var res model.ChargeResult
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		userID, err := subscriptionOwner(ctx, tx, c.PreapprovalID)
 		if err != nil {
@@ -168,8 +170,8 @@ func (r *PremiumRepository) ApplyCharge(ctx context.Context, c model.Charge) (bo
 			return err
 		}
 
-		var appliedAt *time.Time
-		var debitDate *time.Time
+		var appliedAt, debitDate, duplicateAt, refundRequestedAt *time.Time
+		var paymentID *string
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO subscription_charges AS sc
 				(mp_authorized_payment_id, mp_preapproval_id, mp_payment_id, status, payment_status,
@@ -183,12 +185,37 @@ func (r *PremiumRepository) ApplyCharge(ctx context.Context, c model.Charge) (bo
 				debit_date     = COALESCE(EXCLUDED.debit_date, sc.debit_date),
 				retry_attempt  = EXCLUDED.retry_attempt,
 				updated_at     = now()
-			RETURNING applied_at, debit_date`,
+			RETURNING applied_at, debit_date, duplicate_at, refund_requested_at, mp_payment_id`,
 			c.AuthorizedPaymentID, c.PreapprovalID, c.PaymentID, c.Status, c.PaymentStatus,
-			c.AmountCents, c.DebitDate, c.RetryAttempt).Scan(&appliedAt, &debitDate); err != nil {
+			c.AmountCents, c.DebitDate, c.RetryAttempt).
+			Scan(&appliedAt, &debitDate, &duplicateAt, &refundRequestedAt, &paymentID); err != nil {
 			return err
 		}
 		if appliedAt != nil || c.PaymentStatus != model.PaymentStatusApproved {
+			return nil
+		}
+		duplicate := duplicateAt != nil
+		if !duplicate {
+			var otherLive bool
+			if err := tx.QueryRow(ctx, `
+				SELECT EXISTS (SELECT 1 FROM subscriptions
+					WHERE user_id = $1 AND mp_preapproval_id <> $2 AND mp_status IN ('authorized', 'paused'))`,
+				userID, c.PreapprovalID).Scan(&otherLive); err != nil {
+				return err
+			}
+			if otherLive {
+				if _, err := tx.Exec(ctx, `
+					UPDATE subscription_charges SET duplicate_at = now() WHERE mp_authorized_payment_id = $1`,
+					c.AuthorizedPaymentID); err != nil {
+					return err
+				}
+				duplicate = true
+			}
+		}
+		if duplicate {
+			if refundRequestedAt == nil && paymentID != nil {
+				res.RefundPaymentID = *paymentID
+			}
 			return nil
 		}
 
@@ -203,16 +230,47 @@ func (r *PremiumRepository) ApplyCharge(ctx context.Context, c model.Charge) (bo
 			c.AuthorizedPaymentID); err != nil {
 			return err
 		}
-		extended = true
+		res.Extended = true
 		return emitPremiumUpdated(ctx, tx, userID)
 	})
 	if errors.Is(err, ErrNotFound) {
-		return false, err
+		return model.ChargeResult{}, err
 	}
 	if err != nil {
-		return false, fmt.Errorf("repository: apply charge: %w", err)
+		return model.ChargeResult{}, fmt.Errorf("repository: apply charge: %w", err)
 	}
-	return extended, nil
+	return res, nil
+}
+
+// MarkRefundRequested records that MP accepted the refund of a duplicate
+// charge, so ApplyCharge stops asking for it.
+func (r *PremiumRepository) MarkRefundRequested(ctx context.Context, authorizedPaymentID string) error {
+	if _, err := r.pool.Exec(ctx, `
+		UPDATE subscription_charges SET refund_requested_at = now(), updated_at = now()
+		WHERE mp_authorized_payment_id = $1 AND refund_requested_at IS NULL`, authorizedPaymentID); err != nil {
+		return fmt.Errorf("repository: mark refund requested: %w", err)
+	}
+	return nil
+}
+
+// PendingSubscriptions returns the user's checkouts MP may still authorize.
+func (r *PremiumRepository) PendingSubscriptions(ctx context.Context, userID uuid.UUID) ([]model.SubscriptionRecord, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+subscriptionColumns+` FROM subscriptions
+		WHERE user_id = $1 AND mp_status = 'pending' ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("repository: pending subscriptions: %w", err)
+	}
+	defer rows.Close()
+	var out []model.SubscriptionRecord
+	for rows.Next() {
+		s, err := scanSubscription(rows)
+		if err != nil {
+			return nil, fmt.Errorf("repository: pending subscriptions: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 type Revocation = model.Revocation

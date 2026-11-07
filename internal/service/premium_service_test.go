@@ -144,6 +144,78 @@ func TestPremiumStartCheckoutLatestSubscription(t *testing.T) {
 	}
 }
 
+func TestPremiumStartCheckoutCancelsPendingCheckouts(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	seedSub(store, "PRE0", model.SubscriptionStatusPending)
+	gw := &fakeGateway{
+		sub:    model.Subscription{ID: "PRE1", Status: "pending", InitPoint: "https://mp.test/sub"},
+		others: map[string]model.Subscription{"PRE0": mpSub("PRE0", model.SubscriptionStatusPending)},
+	}
+	s := newPremiumService(store, gw, PremiumConfig{})
+
+	url, err := s.StartCheckout(context.Background(), userID, "ana@test.com", ReturnToWeb)
+	if err != nil || url != "https://mp.test/sub" {
+		t.Fatalf("StartCheckout = %q, %v", url, err)
+	}
+	if !slices.Equal(gw.cancelled, []string{"PRE0"}) {
+		t.Errorf("cancelled = %v, want the earlier checkout", gw.cancelled)
+	}
+	if store.subs[0].MPStatus != model.SubscriptionStatusCancelled || len(store.subs) != 2 {
+		t.Errorf("subs = %+v", store.subs)
+	}
+}
+
+// The user paid an earlier checkout but its webhook hasn't arrived yet.
+func TestPremiumStartCheckoutPendingAlreadyAuthorized(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	seedSub(store, "PRE0", model.SubscriptionStatusPending)
+	gw := &fakeGateway{
+		sub:    model.Subscription{ID: "PRE1", Status: "pending"},
+		others: map[string]model.Subscription{"PRE0": mpSub("PRE0", model.SubscriptionStatusAuthorized)},
+	}
+	s := newPremiumService(store, gw, PremiumConfig{})
+
+	if _, err := s.StartCheckout(context.Background(), userID, "ana@test.com", ReturnToWeb); !errors.Is(err, ErrAlreadySubscribed) {
+		t.Fatalf("err = %v, want ErrAlreadySubscribed", err)
+	}
+	if gw.subReq.ExternalReference != "" || len(gw.cancelled) != 0 {
+		t.Errorf("nothing should change in MP: created %+v, cancelled %v", gw.subReq, gw.cancelled)
+	}
+	if store.subs[0].MPStatus != model.SubscriptionStatusAuthorized {
+		t.Errorf("PRE0 = %s, want authorized", store.subs[0].MPStatus)
+	}
+}
+
+func TestPremiumStartCheckoutPendingErrors(t *testing.T) {
+	cases := map[string]struct {
+		storeFail, gwFail string
+	}{
+		"listing pending":      {storeFail: "PendingSubscriptions"},
+		"syncing pending":      {gwFail: "GetSubscription"},
+		"reading it back":      {storeFail: "GetSubscription"},
+		"cancelling the other": {gwFail: "CancelSubscription"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := newFakePremiumStore(premiumNow)
+			seedSub(store, "PRE0", model.SubscriptionStatusPending)
+			store.failOn = map[string]error{tc.storeFail: errBoom}
+			gw := &fakeGateway{
+				sub:    model.Subscription{ID: "PRE1", Status: "pending"},
+				others: map[string]model.Subscription{"PRE0": mpSub("PRE0", model.SubscriptionStatusPending)},
+				failOn: map[string]error{tc.gwFail: errBoom},
+			}
+			s := newPremiumService(store, gw, PremiumConfig{})
+			if _, err := s.StartCheckout(context.Background(), userID, "ana@test.com", ReturnToWeb); !errors.Is(err, errBoom) {
+				t.Fatalf("err = %v, want errBoom", err)
+			}
+			if gw.subReq.ExternalReference != "" {
+				t.Error("no subscription should be created in MP")
+			}
+		})
+	}
+}
+
 func TestPremiumStartCheckoutRequiresPayerEmail(t *testing.T) {
 	gw := &fakeGateway{sub: mpSub("PRE1", "pending")}
 	s := newPremiumService(newFakePremiumStore(premiumNow), gw, PremiumConfig{})
@@ -757,6 +829,69 @@ func TestReconcileLeavesApprovedChargesAlone(t *testing.T) {
 	if p := store.premium[userID]; !p.PremiumUntil.Equal(until) || len(gw.cancelled) != 0 {
 		t.Errorf("nothing should change: until %v, cancelled %v", p.PremiumUntil, gw.cancelled)
 	}
+}
+
+// seedDuplicateCharge reproduces 2026-11-05: PRE0 is live and paid, and the
+// user also paid PRE1, which MP still reports as authorized.
+func seedDuplicateCharge(store *fakePremiumStore) (*fakeGateway, time.Time) {
+	seedSub(store, "PRE0", model.SubscriptionStatusAuthorized)
+	seedSub(store, "PRE1", model.SubscriptionStatusPending)
+	until := premiumNow.AddDate(0, 1, 0)
+	seedPremium(store, until, true)
+	gw := &fakeGateway{
+		sub:     mpSub("PRE1", model.SubscriptionStatusAuthorized),
+		charges: []model.Charge{approvedCharge("AP2", premiumNow)},
+	}
+	return gw, until
+}
+
+func TestReconcileRefundsChargeOfDuplicateSubscription(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	gw, until := seedDuplicateCharge(store)
+	s := newPremiumService(store, gw, PremiumConfig{})
+
+	for i := 0; i < 2; i++ {
+		if err := s.ReconcileSubscription(context.Background(), "PRE1"); err != nil {
+			t.Fatalf("run %d: %v", i+1, err)
+		}
+	}
+
+	if !slices.Equal(gw.refunds, []string{"PAY-AP2/duplicate-charge-AP2"}) {
+		t.Errorf("refunds = %v, want one for the duplicate", gw.refunds)
+	}
+	if !store.refundRequested["AP2"] {
+		t.Error("the refund should be recorded")
+	}
+	if p := store.premium[userID]; p.PremiumUntil == nil || !p.PremiumUntil.Equal(until) {
+		t.Errorf("premium_until = %v, want %v (not extended)", p.PremiumUntil, until)
+	}
+	if !slices.Equal(gw.cancelled, []string{"PRE1"}) {
+		t.Errorf("cancelled = %v, want the duplicate", gw.cancelled)
+	}
+}
+
+func TestRefundDuplicateErrors(t *testing.T) {
+	t.Run("gateway", func(t *testing.T) {
+		store := newFakePremiumStore(premiumNow)
+		gw, _ := seedDuplicateCharge(store)
+		gw.failOn = map[string]error{"RefundPayment": errBoom}
+		s := newPremiumService(store, gw, PremiumConfig{})
+		if err := s.ProcessChargeNotification(context.Background(), "AP2"); !errors.Is(err, errBoom) {
+			t.Fatalf("err = %v, want errBoom", err)
+		}
+		if store.refundRequested["AP2"] {
+			t.Error("a failed refund must be retried, not recorded")
+		}
+	})
+	t.Run("store", func(t *testing.T) {
+		store := newFakePremiumStore(premiumNow)
+		gw, _ := seedDuplicateCharge(store)
+		store.failOn = map[string]error{"MarkRefundRequested": errBoom}
+		s := newPremiumService(store, gw, PremiumConfig{})
+		if err := s.ProcessChargeNotification(context.Background(), "AP2"); !errors.Is(err, errBoom) {
+			t.Fatalf("err = %v, want errBoom", err)
+		}
+	})
 }
 
 func TestReconcileSubscriptionErrors(t *testing.T) {

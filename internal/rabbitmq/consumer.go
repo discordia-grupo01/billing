@@ -8,6 +8,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
+	"github.com/discordia-grupo01/billing/internal/rabbitmq/deadletter"
 	"github.com/discordia-grupo01/events-contract/broker"
 )
 
@@ -15,7 +16,6 @@ const (
 	consumerConnectionName = "discordia-billing-events-consumer"
 	reconnectMinDelay      = time.Second
 	reconnectMaxDelay      = 30 * time.Second
-	requeueDelay           = time.Second
 	prefetch               = 10
 )
 
@@ -88,6 +88,12 @@ func (c *Consumer) consumeOnce(ctx context.Context) (bool, error) {
 			return false, fmt.Errorf("bind %s: %w", key, err)
 		}
 	}
+	retrier, err := deadletter.New(conn, c.queue, deadletter.DefaultPolicy())
+	if err != nil {
+		return false, fmt.Errorf("dead letter queue: %w", err)
+	}
+	defer retrier.Close()
+
 	deliveries, err := ch.Consume(c.queue, "", false, false, false, false, nil)
 	if err != nil {
 		return false, fmt.Errorf("consume: %w", err)
@@ -104,27 +110,15 @@ func (c *Consumer) consumeOnce(ctx context.Context) (bool, error) {
 				return consumed, fmt.Errorf("deliveries closed")
 			}
 			consumed = true
-			if err := c.process(ctx, d); err != nil {
-				return consumed, err
-			}
+			c.process(ctx, retrier, d)
 		}
 	}
 }
 
-func (c *Consumer) process(ctx context.Context, d amqp.Delivery) error {
-	if err := c.handle(ctx, d.RoutingKey, d.Body); err != nil {
-		c.log.Error("event failed, requeueing", "routing_key", d.RoutingKey, "error", err)
-		select {
-		case <-ctx.Done():
-		case <-time.After(requeueDelay):
-		}
-		if err := d.Nack(false, true); err != nil {
-			return fmt.Errorf("nack: %w", err)
-		}
-		return nil
+func (c *Consumer) process(ctx context.Context, retrier *deadletter.Retrier, d amqp.Delivery) {
+	err := c.handle(ctx, d.RoutingKey, d.Body)
+	if err != nil {
+		c.log.Error("event failed", "routing_key", d.RoutingKey, "error", err)
 	}
-	if err := d.Ack(false); err != nil {
-		return fmt.Errorf("ack: %w", err)
-	}
-	return nil
+	retrier.Settle(ctx, d, err != nil)
 }

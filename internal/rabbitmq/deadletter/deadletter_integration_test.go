@@ -13,9 +13,9 @@ import (
 )
 
 func TestRetrier_DeliversTheDeadLetterToARealBroker(t *testing.T) {
-	url := os.Getenv("RABBITMQ_URL")
+	url := os.Getenv("TEST_RABBITMQ_URL")
 	if url == "" {
-		t.Skip("RABBITMQ_URL not set: skipping integration test")
+		t.Skip("TEST_RABBITMQ_URL not set: skipping integration test")
 	}
 	conn, err := amqp.Dial(url)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/discordia-grupo01/billing/internal/model"
+	"github.com/discordia-grupo01/billing/internal/telemetry"
 )
 
 // maxErrorLength bounds last_error, so a huge broker error can't bloat the row.
@@ -38,11 +39,11 @@ func (r *OutboxRepository) PublishNext(ctx context.Context, publish func(context
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		var e model.OutboxEvent
 		err := tx.QueryRow(ctx, `
-			SELECT id, routing_key, payload, attempts FROM outbox_events
+			SELECT id, routing_key, payload, attempts, COALESCE(traceparent, '') FROM outbox_events
 			WHERE published_at IS NULL
 			ORDER BY attempts, created_at
 			LIMIT 1
-			FOR UPDATE SKIP LOCKED`).Scan(&e.ID, &e.RoutingKey, &e.Payload, &e.Attempts)
+			FOR UPDATE SKIP LOCKED`).Scan(&e.ID, &e.RoutingKey, &e.Payload, &e.Attempts, &e.Traceparent)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -77,8 +78,8 @@ func insertOutbox(ctx context.Context, tx pgx.Tx, routingKey string, payload any
 		return fmt.Errorf("outbox: marshal %q: %w", routingKey, err)
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO outbox_events (id, routing_key, payload) VALUES ($1, $2, $3)`,
-		uuid.New(), routingKey, body); err != nil {
+		`INSERT INTO outbox_events (id, routing_key, payload, traceparent) VALUES ($1, $2, $3, NULLIF($4, ''))`,
+		uuid.New(), routingKey, body, telemetry.Traceparent(ctx)); err != nil {
 		return fmt.Errorf("outbox: insert %q: %w", routingKey, err)
 	}
 	return nil

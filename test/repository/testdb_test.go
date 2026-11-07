@@ -41,6 +41,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 	applyMigration(t, pool, "0003_checkout_requests.up.sql")
 	applyMigration(t, pool, "0004_server_boosts.up.sql")
 	applyMigration(t, pool, "0005_duplicate_charges.up.sql")
+	applyMigration(t, pool, "0006_outbox_traceparent.up.sql")
 	return pool
 }
 

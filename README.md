@@ -110,6 +110,23 @@ Cada línea que escribe el servicio es un objeto JSON por la salida estándar, c
 - **Pánicos:** se registran como `panic_recovered` con la ruta, el error y la traza, sin volcar los headers del pedido.
 - El código vive en `internal/logging`. Las llamadas viejas al paquete `log` de Go también salen como JSON, porque `Setup` redirige el logger estándar.
 
+## Trazas (OpenTelemetry)
+
+El servicio manda trazas a cualquier backend que hable OTLP por HTTP (New Relic, Grafana Cloud, un colector propio). Está **apagado por defecto**: sin `OTEL_EXPORTER_OTLP_ENDPOINT` no se exporta nada y el servicio funciona igual.
+
+| Variable | Para qué |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | URL base del backend. En New Relic (cuenta de EE. UU.): `https://otlp.nr-data.net` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Credenciales, por ejemplo `api-key=<clave de licencia de ingesta>`. Es un secreto: va solo en las variables de entorno del despliegue, nunca en el repositorio |
+| `OTEL_SERVICE_NAME` | Nombre con el que aparece el servicio (por defecto `billing`) |
+
+- **Pedidos HTTP:** un span por pedido, llamado como el patrón de la ruta (`GET /v1/...`). Solo guarda `http.request.method`, `http.route` y `http.response.status_code`: nunca el path real, la query string ni los headers. Si el pedido trae un `traceparent` (Kong o un cliente), la traza continúa desde ahí.
+- **Base de datos:** un span por consulta, con la operación y el SQL con sus `$1`, `$2`, **sin los valores**. Las consultas que no pertenecen a un pedido o a un evento (barridos y reintentos en segundo plano) no generan spans.
+- **RabbitMQ:** `outbox_events.traceparent` (migración `0006`) guarda la traza del pedido que originó el evento. Cuando el *poller* lo publica crea un span `outbox publish <routing key>` dentro de esa traza y el mensaje sale con la cabecera `traceparent`. Los eventos viejos y los que no vienen de un pedido tienen `traceparent` nulo y se publican igual.
+- **Consumidores:** cada evento que se consume abre un span `<routing key> process` dentro de la traza que llega en la cabecera `traceparent` del mensaje; si falla y se reintenta, el span queda marcado como error. Si el mensaje no la trae, empieza una traza nueva.
+- **Qué nunca se exporta:** el valor de los parámetros SQL, el texto de un error (un filtro del exportador le borra `exception.message` y `exception.stacktrace` a todo span) ni datos del usuario.
+- **Logs:** cada línea escrita dentro de un pedido lleva `trace_id` y `span_id`.
+
 ## Deploy
 Un push a `main`, si pasan los tests, corre tres jobs de `.github/workflows/ci.yml`:
 

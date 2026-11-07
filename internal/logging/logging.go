@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const EnvLevel = "LOG_LEVEL"
@@ -59,7 +60,27 @@ func ParseLevel(name string) (slog.Level, error) {
 
 func New(service string, level slog.Level, out io.Writer) *slog.Logger {
 	handler := slog.NewJSONHandler(out, &slog.HandlerOptions{Level: level, ReplaceAttr: replace})
-	return slog.New(handler).With("service", service)
+	return slog.New(traceHandler{handler}).With("service", service)
+}
+
+type traceHandler struct{ slog.Handler }
+
+func (h traceHandler) Handle(ctx context.Context, record slog.Record) error {
+	if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
+		record.AddAttrs(
+			slog.String("trace_id", spanContext.TraceID().String()),
+			slog.String("span_id", spanContext.SpanID().String()),
+		)
+	}
+	return h.Handler.Handle(ctx, record)
+}
+
+func (h traceHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return traceHandler{h.Handler.WithAttrs(attrs)}
+}
+
+func (h traceHandler) WithGroup(name string) slog.Handler {
+	return traceHandler{h.Handler.WithGroup(name)}
 }
 
 func Setup(service string) error {

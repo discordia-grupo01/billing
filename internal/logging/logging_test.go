@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/discordia-grupo01/billing/internal/logging"
 )
@@ -122,6 +123,26 @@ func TestSetupAnnouncesStartWithoutRepeatingTheLevelKey(t *testing.T) {
 	}
 	if entry["message"] != "service_started" || entry["level"] != "info" || entry["log_level"] != "debug" || entry["service"] != "svc" {
 		t.Errorf("entrada inesperada: %v", entry)
+	}
+}
+
+func TestEntriesCarryTheTraceWhenThereIsOne(t *testing.T) {
+	buf := useLogger(t, slog.LevelDebug)
+	traceID, _ := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	spanID, _ := trace.SpanIDFromHex("00f067aa0ba902b7")
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: traceID, SpanID: spanID, TraceFlags: trace.FlagsSampled,
+	}))
+
+	slog.InfoContext(ctx, "con traza", "k", "v")
+	slog.Info("sin traza")
+
+	got := entries(t, buf)
+	if got[0]["trace_id"] != "4bf92f3577b34da6a3ce929d0e0e4736" || got[0]["span_id"] != "00f067aa0ba902b7" || got[0]["k"] != "v" {
+		t.Errorf("faltan los ids de la traza: %v", got[0])
+	}
+	if _, ok := got[1]["trace_id"]; ok {
+		t.Errorf("sin traza no debería haber trace_id: %v", got[1])
 	}
 }
 

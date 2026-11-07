@@ -21,6 +21,7 @@ import (
 	"github.com/discordia-grupo01/billing/internal/rabbitmq"
 	"github.com/discordia-grupo01/billing/internal/repository"
 	"github.com/discordia-grupo01/billing/internal/service"
+	"github.com/discordia-grupo01/billing/internal/telemetry"
 )
 
 // How often each job runs; see internal/jobs.
@@ -51,6 +52,16 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	shutdownTelemetry, err := telemetry.Setup(ctx, "billing")
+	if err != nil {
+		logging.Fatalf("telemetry: %v", err)
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTelemetry(flushCtx)
+	}()
+
 	pool, err := repository.NewPool(ctx, cfg.PostgresDSN())
 	if err != nil {
 		logging.Fatalf("postgres: %v", err)
@@ -75,7 +86,7 @@ func main() {
 	}, logger)
 
 	router := gin.New()
-	router.Use(logging.Middleware(), logging.Recovery())
+	router.Use(telemetry.Middleware(), logging.Middleware(), logging.Recovery())
 	checkouts := service.NewCheckoutGuard(repository.NewCheckoutRequestRepository(pool), logger)
 	handler.NewBillingHandler(points, premium, checkouts, logger).Register(router, middleware.Auth([]byte(cfg.JWTSecret)))
 	handler.NewWebhookHandler(points, premium, cfg.MPWebhookSecret, logger).Register(router)

@@ -14,6 +14,7 @@ import (
 	"github.com/mercadopago/sdk-go/pkg/mperror"
 
 	"github.com/discordia-grupo01/billing/internal/model"
+	"github.com/discordia-grupo01/billing/internal/service"
 )
 
 // redirectRequester sends the SDK's requests (hardcoded to api.mercadopago.com)
@@ -253,5 +254,38 @@ func TestFormatCents(t *testing.T) {
 		if got := formatCents(in); got != want {
 			t.Errorf("formatCents(%d) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestRefundPayment(t *testing.T) {
+	client, got := newServer(t, http.StatusCreated, `{"id":9,"payment_id":555,"status":"approved"}`)
+
+	if err := client.RefundPayment(context.Background(), "555", "duplicate-charge-AP2"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.method != http.MethodPost || got.path != "/v1/payments/555/refunds" {
+		t.Errorf("unexpected request %s %s", got.method, got.path)
+	}
+	if key := got.headers.Get("X-Idempotency-Key"); key != "duplicate-charge-AP2" {
+		t.Errorf("idempotency key = %q", key)
+	}
+}
+
+func TestRefundPaymentValidates(t *testing.T) {
+	client, _ := newServer(t, http.StatusCreated, `{}`)
+
+	if err := client.RefundPayment(context.Background(), "abc", "key"); err == nil {
+		t.Error("expected error for a non-numeric payment id")
+	}
+	if err := client.RefundPayment(context.Background(), "555", ""); err == nil {
+		t.Error("expected error without idempotency key")
+	}
+}
+
+func TestRefundPaymentNotFound(t *testing.T) {
+	client, _ := newServer(t, http.StatusNotFound, `{"message":"not found","status":404}`)
+
+	if err := client.RefundPayment(context.Background(), "555", "key"); !errors.Is(err, service.ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }

@@ -56,6 +56,14 @@ type Charge struct {
 	AppliedAt     *time.Time
 }
 
+// ChargeResult is what storing a charge did to Premium.
+type ChargeResult struct {
+	Extended bool
+	// RefundPaymentID is set while an approved charge of a duplicate
+	// subscription waits for its refund in MP.
+	RefundPaymentID string
+}
+
 // Revocation tells the caller which preapproval to cancel in MP after a
 // charge was refunded or charged back.
 type Revocation struct {

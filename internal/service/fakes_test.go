@@ -21,11 +21,15 @@ type fakeGateway struct {
 	createErr error
 	getErr    error
 
-	subReq    model.SubscriptionRequest
-	sub       model.Subscription
+	subReq model.SubscriptionRequest
+	sub    model.Subscription
+	// Other subscriptions MP knows about, besides sub.
+	others    map[string]model.Subscription
 	cancelled []string
-	charges   []model.Charge
-	payment   model.Payment
+	// "paymentID/idempotencyKey" of every refund asked for.
+	refunds []string
+	charges []model.Charge
+	payment model.Payment
 	// chargeback id -> disputed payment id
 	chargebacks map[string]string
 	failOn      map[string]error
@@ -60,6 +64,9 @@ func (g *fakeGateway) GetSubscription(_ context.Context, id string) (model.Subsc
 	if err := g.failOn["GetSubscription"]; err != nil {
 		return model.Subscription{}, err
 	}
+	if other, ok := g.others[id]; ok {
+		return other, nil
+	}
 	if g.sub.ID != id {
 		return model.Subscription{}, fmt.Errorf("preapproval %s: %w", id, ErrNotFound)
 	}
@@ -73,6 +80,10 @@ func (g *fakeGateway) CancelSubscription(_ context.Context, id string) (model.Su
 	}
 	if g.sub.ID == id {
 		g.sub.Status = model.SubscriptionStatusCancelled
+	}
+	if other, ok := g.others[id]; ok {
+		other.Status = model.SubscriptionStatusCancelled
+		g.others[id] = other
 	}
 	return model.Subscription{ID: id, Status: model.SubscriptionStatusCancelled}, nil
 }
@@ -110,6 +121,11 @@ func (g *fakeGateway) GetPayment(_ context.Context, id string) (model.Payment, e
 		return model.Payment{}, fmt.Errorf("payment %s: %w", id, ErrNotFound)
 	}
 	return g.payment, nil
+}
+
+func (g *fakeGateway) RefundPayment(_ context.Context, paymentID, key string) error {
+	g.refunds = append(g.refunds, paymentID+"/"+key)
+	return g.failOn["RefundPayment"]
 }
 
 func (g *fakeGateway) GetChargebackPaymentID(_ context.Context, id string) (string, error) {
@@ -283,7 +299,9 @@ func (f *fakePointsStore) ListLedger(_ context.Context, _ uuid.UUID, limit int) 
 // fakePremiumStore mimics the real premium repository in memory, including
 // the one-live-subscription-per-user rule and the charge bookkeeping.
 type fakePremiumStore struct {
-	revoked map[string]bool
+	revoked         map[string]bool
+	duplicate       map[string]bool
+	refundRequested map[string]bool
 
 	subs    []model.SubscriptionRecord // in creation order
 	premium map[uuid.UUID]model.Premium
@@ -296,7 +314,10 @@ type fakePremiumStore struct {
 }
 
 func newFakePremiumStore(now time.Time) *fakePremiumStore {
-	return &fakePremiumStore{premium: map[uuid.UUID]model.Premium{}, charges: map[string]model.Charge{}, now: now}
+	return &fakePremiumStore{
+		premium: map[uuid.UUID]model.Premium{}, charges: map[string]model.Charge{}, now: now,
+		duplicate: map[string]bool{}, refundRequested: map[string]bool{},
+	}
 }
 
 func (f *fakePremiumStore) sub(id string) (int, bool) {
@@ -420,13 +441,13 @@ func (f *fakePremiumStore) SyncSubscriptionStatus(_ context.Context, id, mpStatu
 	return changed, nil
 }
 
-func (f *fakePremiumStore) ApplyCharge(_ context.Context, c model.Charge) (bool, error) {
+func (f *fakePremiumStore) ApplyCharge(_ context.Context, c model.Charge) (model.ChargeResult, error) {
 	if err := f.failOn["ApplyCharge"]; err != nil {
-		return false, err
+		return model.ChargeResult{}, err
 	}
 	i, ok := f.sub(c.PreapprovalID)
 	if !ok {
-		return false, model.ErrNotFound
+		return model.ChargeResult{}, model.ErrNotFound
 	}
 	prev, seen := f.charges[c.AuthorizedPaymentID]
 	if seen {
@@ -434,10 +455,20 @@ func (f *fakePremiumStore) ApplyCharge(_ context.Context, c model.Charge) (bool,
 	}
 	f.charges[c.AuthorizedPaymentID] = c
 	if c.AppliedAt != nil || c.PaymentStatus != model.PaymentStatusApproved {
-		return false, nil
+		return model.ChargeResult{}, nil
 	}
 
 	userID := f.subs[i].UserID
+	if !f.duplicate[c.AuthorizedPaymentID] && f.otherLive(userID, c.PreapprovalID) {
+		f.duplicate[c.AuthorizedPaymentID] = true
+	}
+	if f.duplicate[c.AuthorizedPaymentID] {
+		if f.refundRequested[c.AuthorizedPaymentID] || c.PaymentID == "" {
+			return model.ChargeResult{}, nil
+		}
+		return model.ChargeResult{RefundPaymentID: c.PaymentID}, nil
+	}
+
 	from := f.now
 	if c.DebitDate != nil {
 		from = *c.DebitDate
@@ -453,7 +484,28 @@ func (f *fakePremiumStore) ApplyCharge(_ context.Context, c model.Charge) (bool,
 	applied := f.now
 	c.AppliedAt = &applied
 	f.charges[c.AuthorizedPaymentID] = c
-	return true, nil
+	return model.ChargeResult{Extended: true}, nil
+}
+
+func (f *fakePremiumStore) MarkRefundRequested(_ context.Context, id string) error {
+	if err := f.failOn["MarkRefundRequested"]; err != nil {
+		return err
+	}
+	f.refundRequested[id] = true
+	return nil
+}
+
+func (f *fakePremiumStore) PendingSubscriptions(_ context.Context, userID uuid.UUID) ([]model.SubscriptionRecord, error) {
+	if err := f.failOn["PendingSubscriptions"]; err != nil {
+		return nil, err
+	}
+	var out []model.SubscriptionRecord
+	for _, s := range f.subs {
+		if s.UserID == userID && s.MPStatus == model.SubscriptionStatusPending {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakePremiumStore) RevokeCharge(_ context.Context, paymentID, paymentStatus string) (model.Revocation, bool, error) {

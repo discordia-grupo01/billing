@@ -19,7 +19,7 @@ var ErrNoActivePremium = errors.New("user has no active premium")
 // SimulatorStore is the slice of the premium repository the simulator needs.
 type SimulatorStore interface {
 	LatestSubscription(ctx context.Context, userID uuid.UUID) (model.SubscriptionRecord, error)
-	ApplyCharge(ctx context.Context, c model.Charge) (bool, error)
+	ApplyCharge(ctx context.Context, c model.Charge) (model.ChargeResult, error)
 	EndPremiumPeriod(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 

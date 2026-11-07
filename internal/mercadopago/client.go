@@ -15,6 +15,7 @@ import (
 	"github.com/mercadopago/sdk-go/pkg/order"
 	"github.com/mercadopago/sdk-go/pkg/payment"
 	"github.com/mercadopago/sdk-go/pkg/preapproval"
+	"github.com/mercadopago/sdk-go/pkg/refund"
 	"github.com/mercadopago/sdk-go/pkg/requestoptions"
 
 	"github.com/discordia-grupo01/billing/internal/model"
@@ -44,6 +45,7 @@ type Client struct {
 	charges       invoice.Client
 	payments      payment.Client
 	chargebacks   chargeback.Client
+	refunds       refund.Client
 }
 
 func NewClient(accessToken string, opts ...config.Option) (*Client, error) {
@@ -57,6 +59,7 @@ func NewClient(accessToken string, opts ...config.Option) (*Client, error) {
 		charges:       invoice.NewClient(cfg),
 		payments:      payment.NewClient(cfg),
 		chargebacks:   chargeback.NewClient(cfg),
+		refunds:       refund.NewClient(cfg),
 	}, nil
 }
 
@@ -234,6 +237,21 @@ func (c *Client) GetPayment(ctx context.Context, paymentID string) (model.Paymen
 		ExternalReference: resp.ExternalReference,
 		AmountCents:       floatToCents(resp.TransactionAmount),
 	}, nil
+}
+
+func (c *Client) RefundPayment(ctx context.Context, paymentID, idempotencyKey string) error {
+	id, err := strconv.Atoi(paymentID)
+	if err != nil {
+		return fmt.Errorf("mercadopago: invalid payment id %q", paymentID)
+	}
+	if idempotencyKey == "" {
+		return errors.New("mercadopago: refund idempotency key is required")
+	}
+	ctx = requestoptions.WithIdempotencyKey(ctx, idempotencyKey)
+	if _, err := c.refunds.Create(ctx, id); err != nil {
+		return apiError("refund payment", err)
+	}
+	return nil
 }
 
 func (c *Client) GetChargebackPaymentID(ctx context.Context, chargebackID string) (string, error) {

@@ -12,6 +12,8 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/discordia-grupo01/events-contract/broker"
+
+	"github.com/discordia-grupo01/billing/internal/telemetry"
 )
 
 const (
@@ -45,7 +47,12 @@ func (p *Publisher) Publish(ctx context.Context, routingKey string, body []byte)
 		return err
 	}
 	confirm, err := p.ch.PublishWithDeferredConfirmWithContext(ctx, broker.ExchangeName, routingKey, false, false,
-		amqp.Publishing{ContentType: "application/json", DeliveryMode: amqp.Persistent, Body: body})
+		amqp.Publishing{
+			ContentType:  "application/json",
+			DeliveryMode: amqp.Persistent,
+			Body:         body,
+			Headers:      telemetry.InjectAMQP(ctx, nil),
+		})
 	if err != nil {
 		p.closeLocked()
 		return fmt.Errorf("rabbitmq: publish %s: %w", routingKey, err)

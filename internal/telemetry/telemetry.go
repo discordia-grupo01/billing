@@ -2,13 +2,16 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -48,5 +51,19 @@ func Setup(ctx context.Context, service string) (func(context.Context) error, er
 	)
 	otel.SetTracerProvider(provider)
 
-	return provider.Shutdown, nil
+	if !metricsEnabled() {
+		return provider.Shutdown, nil
+	}
+
+	metricExporter, err := otlpmetrichttp.New(ctx, otlpmetrichttp.WithTemporalitySelector(deltaTemporality))
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: cannot create the OTLP metric exporter: %w", err)
+	}
+
+	meterProvider := newMeterProvider(res, sdkmetric.NewPeriodicReader(metricExporter, sdkmetric.WithInterval(exportInterval)))
+	otel.SetMeterProvider(meterProvider)
+
+	return func(ctx context.Context) error {
+		return errors.Join(provider.Shutdown(ctx), meterProvider.Shutdown(ctx))
+	}, nil
 }

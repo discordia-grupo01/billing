@@ -110,9 +110,9 @@ Cada línea que escribe el servicio es un objeto JSON por la salida estándar, c
 - **Pánicos:** se registran como `panic_recovered` con la ruta, el error y la traza, sin volcar los headers del pedido.
 - El código vive en `internal/logging`. Las llamadas viejas al paquete `log` de Go también salen como JSON, porque `Setup` redirige el logger estándar.
 
-## Trazas (OpenTelemetry)
+## Trazas y métricas (OpenTelemetry)
 
-El servicio manda trazas a cualquier backend que hable OTLP por HTTP (New Relic, Grafana Cloud, un colector propio). Está **apagado por defecto**: sin `OTEL_EXPORTER_OTLP_ENDPOINT` no se exporta nada y el servicio funciona igual.
+El servicio manda trazas y métricas a cualquier backend que hable OTLP por HTTP (New Relic, Grafana Cloud, un colector propio). Está **apagado por defecto**: sin `OTEL_EXPORTER_OTLP_ENDPOINT` no se exporta nada y el servicio funciona igual.
 
 | Variable | Para qué |
 |---|---|
@@ -125,7 +125,23 @@ El servicio manda trazas a cualquier backend que hable OTLP por HTTP (New Relic,
 - **RabbitMQ:** `outbox_events.traceparent` (migración `0006`) guarda la traza del pedido que originó el evento. Cuando el *poller* lo publica crea un span `outbox publish <routing key>` dentro de esa traza y el mensaje sale con la cabecera `traceparent`. Los eventos viejos y los que no vienen de un pedido tienen `traceparent` nulo y se publican igual.
 - **Consumidores:** cada evento que se consume abre un span `<routing key> process` dentro de la traza que llega en la cabecera `traceparent` del mensaje; si falla y se reintenta, el span queda marcado como error. Si el mensaje no la trae, empieza una traza nueva.
 - **Qué nunca se exporta:** el valor de los parámetros SQL, el texto de un error (un filtro del exportador le borra `exception.message` y `exception.stacktrace` a todo span) ni datos del usuario.
+- **Métricas HTTP:** el histograma `http.server.request.duration` (en segundos, temporalidad delta, exportado cada 60 s) se registra en el mismo middleware que arma el span, con `http.request.method`, `http.route` y `http.response.status_code`; si el estado es 5xx suma `error.type`. De ahí salen el throughput, la latencia y la tasa de errores del resumen de APM en New Relic. Los pedidos sin ruta se agrupan en `unmatched`. Nunca guarda la ruta real ni la query string.
 - **Logs:** cada línea escrita dentro de un pedido lleva `trace_id` y `span_id`.
+
+## Envío de logs (New Relic)
+
+Además de la salida estándar, el servicio puede enviar sus logs al Log API de New Relic. Está **apagado por defecto**: solo se activa si hay `LOG_SHIP_URL` y una clave (`LOG_SHIP_API_KEY` o la `api-key` de `OTEL_EXPORTER_OTLP_HEADERS`).
+
+| Variable | Para qué |
+|---|---|
+| `LOG_SHIP_URL` | URL del Log API. En New Relic (cuenta de EE. UU.): `https://log-api.newrelic.com/log/v1` |
+| `LOG_SHIP_API_KEY` | Opcional: clave de ingesta para `LOG_SHIP_URL`. Si no está, se toma la `api-key` de `OTEL_EXPORTER_OTLP_HEADERS`. Es un secreto: va solo en las variables de entorno del despliegue |
+
+- **Qué se envía:** las mismas líneas que salen por la salida estándar, con el mismo filtrado de datos sensibles (campos `password`, `token`, `ticket`, `email`, `content`, etc. y emails o JWT dentro de textos). `trace_id` y `span_id` viajan como `trace.id` y `span.id`, que es como New Relic enlaza cada log con su traza. El servicio se identifica con `service.name` (el valor de `OTEL_SERVICE_NAME`, por defecto `billing`).
+- **Cómo se envía:** `internal/logging` junta las líneas en lotes de hasta 200 o cada 5 segundos, las comprime en gzip y las manda por HTTPS. Los pedidos no esperan al envío.
+- **Si el backend falla:** reintenta con espera creciente (de 1 s hasta 60 s) ante errores de red, 408, 429 y 5xx; un lote rechazado de forma definitiva (por ejemplo 400 o 403) se descarta. La cola está acotada a 5.000 entradas: si se llena descarta las más viejas, para no crecer sin límite en memoria.
+- **Sin bucles:** los avisos del propio envío (`log_shipping_failed`, `log_shipping_recovered`, `log_batch_discarded`, `log_entries_dropped`) salen solo por la salida estándar y nunca se reenvían.
+- **Al apagar:** `logging.Flush()` intenta enviar lo que quedó pendiente durante unos 3 segundos.
 
 ## Deploy
 Un push a `main`, si pasan los tests, corre tres jobs de `.github/workflows/ci.yml`:

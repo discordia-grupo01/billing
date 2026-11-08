@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -59,8 +60,58 @@ func ParseLevel(name string) (slog.Level, error) {
 }
 
 func New(service string, level slog.Level, out io.Writer) *slog.Logger {
-	handler := slog.NewJSONHandler(out, &slog.HandlerOptions{Level: level, ReplaceAttr: replace})
-	return slog.New(traceHandler{handler}).With("service", service)
+	return build(service, level, out, nil)
+}
+
+func build(service string, level slog.Level, out io.Writer, ship io.Writer) *slog.Logger {
+	handlers := fanoutHandler{jsonHandler(out, level)}
+	if ship != nil {
+		handlers = append(handlers, jsonHandler(ship, level))
+	}
+	return slog.New(traceHandler{handlers}).With("service", service)
+}
+
+func jsonHandler(out io.Writer, level slog.Level) slog.Handler {
+	return slog.NewJSONHandler(out, &slog.HandlerOptions{Level: level, ReplaceAttr: replace})
+}
+
+type fanoutHandler []slog.Handler
+
+func (f fanoutHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, handler := range f {
+		if handler.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (f fanoutHandler) Handle(ctx context.Context, record slog.Record) error {
+	var failure error
+	for _, handler := range f {
+		if handler.Enabled(ctx, record.Level) {
+			if err := handler.Handle(ctx, record.Clone()); err != nil {
+				failure = err
+			}
+		}
+	}
+	return failure
+}
+
+func (f fanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	out := make(fanoutHandler, len(f))
+	for i, handler := range f {
+		out[i] = handler.WithAttrs(attrs)
+	}
+	return out
+}
+
+func (f fanoutHandler) WithGroup(name string) slog.Handler {
+	out := make(fanoutHandler, len(f))
+	for i, handler := range f {
+		out[i] = handler.WithGroup(name)
+	}
+	return out
 }
 
 type traceHandler struct{ slog.Handler }
@@ -89,9 +140,41 @@ func Setup(service string) error {
 		return err
 	}
 	logger := New(service, level, os.Stdout)
+	if config, ok := shipperConfigFromEnv(service); ok {
+		logger = build(service, level, os.Stdout, startShipper(config, logger))
+	}
 	slog.SetDefault(logger)
 	logger.Info("service_started", "log_level", levelName(level))
 	return nil
+}
+
+var (
+	shipperMu     sync.Mutex
+	activeShipper *shipper
+)
+
+func startShipper(config shipperConfig, console *slog.Logger) *shipper {
+	shipperMu.Lock()
+	defer shipperMu.Unlock()
+	if activeShipper != nil {
+		return activeShipper
+	}
+	activeShipper = newShipper(config, console)
+	return activeShipper
+}
+
+func Flush() {
+	shipperMu.Lock()
+	current := activeShipper
+	activeShipper = nil
+	shipperMu.Unlock()
+
+	if current == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	current.shutdown(ctx)
 }
 
 func MustSetup(service string) {

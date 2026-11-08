@@ -40,6 +40,7 @@ const (
 
 func main() {
 	logging.MustSetup("billing")
+	defer logging.Flush()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

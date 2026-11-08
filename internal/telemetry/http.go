@@ -2,17 +2,22 @@ package telemetry
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
 func Middleware() gin.HandlerFunc {
+	requestDuration := newRequestDuration()
+
 	return func(c *gin.Context) {
+		start := time.Now()
 		route := c.FullPath()
 		if route == "" {
 			route = "unmatched"
@@ -32,6 +37,8 @@ func Middleware() gin.HandlerFunc {
 		c.Next()
 
 		status := c.Writer.Status()
+		requestDuration.Record(ctx, time.Since(start).Seconds(),
+			metric.WithAttributes(requestAttributes(c.Request.Method, route, status)...))
 		span.SetAttributes(attribute.Int("http.response.status_code", status))
 		if status >= http.StatusInternalServerError {
 			span.SetStatus(codes.Error, http.StatusText(status))

@@ -165,6 +165,26 @@ func TestPremiumStartCheckoutCancelsPendingCheckouts(t *testing.T) {
 	}
 }
 
+// A pending checkout MP doesn't know must not stop the check: the ones after
+// it still get cancelled, or they could be paid on top of the new one.
+func TestPremiumStartCheckoutCancelsPendingAfterAnUnknownOne(t *testing.T) {
+	store := newFakePremiumStore(premiumNow)
+	seedSub(store, "PRE0", model.SubscriptionStatusPending)
+	seedSub(store, "PRE1", model.SubscriptionStatusPending)
+	gw := &fakeGateway{
+		sub:    model.Subscription{ID: "PRE2", Status: "pending", InitPoint: "https://mp.test/sub"},
+		others: map[string]model.Subscription{"PRE1": mpSub("PRE1", model.SubscriptionStatusPending)},
+	}
+	s := newPremiumService(store, gw, PremiumConfig{})
+
+	if _, err := s.StartCheckout(context.Background(), userID, "ana@test.com", ReturnToWeb); err != nil {
+		t.Fatalf("StartCheckout: %v", err)
+	}
+	if !slices.Equal(gw.cancelled, []string{"PRE1"}) {
+		t.Errorf("cancelled = %v, want PRE1 even though PRE0 is unknown to MP", gw.cancelled)
+	}
+}
+
 // The user paid an earlier checkout but its webhook hasn't arrived yet.
 func TestPremiumStartCheckoutPendingAlreadyAuthorized(t *testing.T) {
 	store := newFakePremiumStore(premiumNow)

@@ -16,6 +16,7 @@ make run
 ```
 
 Para probar pagos, tarjetas de prueba y simuladores: [`docs/testing.md`](docs/testing.md).
+Mutation testing de la lógica de pagos: [`docs/mutation-testing`](docs/mutation-testing/README.md).
 
 ## Variables de entorno
 | Variable | Default | Descripcion |

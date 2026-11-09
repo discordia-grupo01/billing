@@ -1,4 +1,4 @@
-.PHONY: run test test-integration build migrate migrate-down republish-premium
+.PHONY: run test test-integration mutation build migrate migrate-down republish-premium
 
 -include .env
 export
@@ -31,6 +31,13 @@ test-integration:
 		TEST_RABBITMQ_URL="amqp://guest:guest@localhost:55672/" \
 		go test ./... -p 1 -count=1 -coverpkg=./internal/... -cover; \
 		status=$$?; docker stop billing-test-pg billing-test-rabbit >/dev/null; exit $$status
+
+# Mutation testing de internal/service con gremlins (ver docs/mutation-testing).
+# Tarda alrededor de un minuto; no corre en el CI.
+mutation:
+	gremlins unleash ./internal/service --timeout-coefficient 50 --workers 6 \
+		--invert-assignments --invert-logical --invert-loopctrl --remove-self-assignments \
+		--invert-bitwise --invert-bwassign --output docs/mutation-testing/after.json
 
 build:
 	go build -o bin/api ./cmd/api

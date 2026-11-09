@@ -8,8 +8,13 @@ import (
 
 	events "github.com/discordia-grupo01/events-contract/billing"
 	"github.com/discordia-grupo01/events-contract/boosts"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/discordia-grupo01/billing/internal/model"
+	"github.com/discordia-grupo01/billing/internal/telemetry"
 )
 
 // batchSize bounds one run, so a big backlog doesn't hold a run forever.
@@ -59,7 +64,20 @@ func (r *Relay) publish(ctx context.Context, e model.OutboxEvent) error {
 	if err != nil {
 		return err
 	}
-	return r.publisher.Publish(ctx, e.RoutingKey, body)
+	publishCtx := telemetry.ContextWithTraceparent(ctx, e.Traceparent)
+	publishCtx, span := otel.Tracer("github.com/discordia-grupo01/billing").Start(publishCtx, "outbox publish "+e.RoutingKey,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "rabbitmq"),
+			attribute.String("messaging.destination.name", e.RoutingKey),
+		),
+	)
+	defer span.End()
+	if err := r.publisher.Publish(publishCtx, e.RoutingKey, body); err != nil {
+		span.SetStatus(codes.Error, "publish failed")
+		return err
+	}
+	return nil
 }
 
 func (r *Relay) sign(e model.OutboxEvent) ([]byte, error) {

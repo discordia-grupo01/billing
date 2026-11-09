@@ -9,6 +9,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/discordia-grupo01/billing/internal/rabbitmq/deadletter"
+	"github.com/discordia-grupo01/billing/internal/telemetry"
 	"github.com/discordia-grupo01/events-contract/broker"
 )
 
@@ -116,9 +117,11 @@ func (c *Consumer) consumeOnce(ctx context.Context) (bool, error) {
 }
 
 func (c *Consumer) process(ctx context.Context, retrier *deadletter.Retrier, d amqp.Delivery) {
-	err := c.handle(ctx, d.RoutingKey, d.Body)
+	spanCtx, end := telemetry.StartConsumer(ctx, c.queue, d)
+	err := c.handle(spanCtx, d.RoutingKey, d.Body)
 	if err != nil {
 		c.log.Error("event failed", "routing_key", d.RoutingKey, "error", err)
 	}
-	retrier.Settle(ctx, d, err != nil)
+	retrier.Settle(spanCtx, d, err != nil)
+	end(err != nil)
 }

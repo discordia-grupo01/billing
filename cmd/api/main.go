@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
 	"log/slog"
 	"net/http"
 	"os/signal"
@@ -15,12 +14,14 @@ import (
 	"github.com/discordia-grupo01/billing/internal/config"
 	"github.com/discordia-grupo01/billing/internal/handler"
 	"github.com/discordia-grupo01/billing/internal/jobs"
+	"github.com/discordia-grupo01/billing/internal/logging"
 	"github.com/discordia-grupo01/billing/internal/mercadopago"
 	"github.com/discordia-grupo01/billing/internal/middleware"
 	"github.com/discordia-grupo01/billing/internal/outbox"
 	"github.com/discordia-grupo01/billing/internal/rabbitmq"
 	"github.com/discordia-grupo01/billing/internal/repository"
 	"github.com/discordia-grupo01/billing/internal/service"
+	"github.com/discordia-grupo01/billing/internal/telemetry"
 )
 
 // How often each job runs; see internal/jobs.
@@ -38,26 +39,39 @@ const (
 )
 
 func main() {
+	logging.MustSetup("billing")
+	defer logging.Flush()
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		logging.Fatalf("config: %v", err)
 	}
 	if cfg.IsProduction() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	shutdownTelemetry, err := telemetry.Setup(ctx, "billing")
+	if err != nil {
+		logging.Fatalf("telemetry: %v", err)
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTelemetry(flushCtx)
+	}()
+
 	pool, err := repository.NewPool(ctx, cfg.PostgresDSN())
 	if err != nil {
-		log.Fatalf("postgres: %v", err)
+		logging.Fatalf("postgres: %v", err)
 	}
 	defer pool.Close()
 
 	gateway, err := mercadopago.NewClient(cfg.MPAccessToken)
 	if err != nil {
-		log.Fatalf("mercadopago: %v", err)
+		logging.Fatalf("mercadopago: %v", err)
 	}
 
 	logger := slog.Default()
@@ -72,7 +86,8 @@ func main() {
 		TestPayerEmail: cfg.MPTestPayerEmail,
 	}, logger)
 
-	router := gin.Default()
+	router := gin.New()
+	router.Use(telemetry.Middleware(), logging.Middleware(), logging.Recovery())
 	checkouts := service.NewCheckoutGuard(repository.NewCheckoutRequestRepository(pool), logger)
 	handler.NewBillingHandler(points, premium, checkouts, logger).Register(router, middleware.Auth([]byte(cfg.JWTSecret)))
 	handler.NewWebhookHandler(points, premium, cfg.MPWebhookSecret, logger).Register(router)
@@ -127,18 +142,18 @@ func main() {
 
 	srv := &http.Server{Addr: cfg.Host + ":" + cfg.Port, Handler: router, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
-		log.Printf("listening on %s", srv.Addr)
+		logging.Infof("listening on %s", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("http: %v", err)
+			logging.Fatalf("http: %v", err)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Print("shutting down")
+	logging.Infof("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("http shutdown: %v", err)
+		logging.Errorf("http shutdown: %v", err)
 	}
 	waitJobs()
 	<-consumerDone

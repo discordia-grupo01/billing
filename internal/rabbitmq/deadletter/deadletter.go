@@ -6,11 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"log"
 	"math/rand"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+
+	"github.com/discordia-grupo01/billing/internal/logging"
 )
 
 const (
@@ -121,11 +122,11 @@ func (r *Retrier) Settle(ctx context.Context, d amqp.Delivery, retry bool) {
 		err := r.sender.Send(ctx, r.queue, r.deadLetter(d, attempt))
 		if err == nil {
 			delete(r.attempts, key)
-			log.Printf("deadletter: queue=%s routing_key=%s event_id=%s moved to %s%s after %d attempts", r.queue, d.RoutingKey, eventID(d.Body), r.queue, QueueSuffix, attempt)
+			logging.Errorf("deadletter: queue=%s routing_key=%s event_id=%s moved to %s%s after %d attempts", r.queue, d.RoutingKey, eventID(d.Body), r.queue, QueueSuffix, attempt)
 			_ = d.Ack(false)
 			return
 		}
-		log.Printf("deadletter: queue=%s routing_key=%s event_id=%s could not be moved to %s%s, retrying: %v", r.queue, d.RoutingKey, eventID(d.Body), r.queue, QueueSuffix, err)
+		logging.Errorf("deadletter: queue=%s routing_key=%s event_id=%s could not be moved to %s%s, retrying: %v", r.queue, d.RoutingKey, eventID(d.Body), r.queue, QueueSuffix, err)
 	}
 
 	if len(r.attempts) >= maxTracked {
@@ -133,7 +134,7 @@ func (r *Retrier) Settle(ctx context.Context, d amqp.Delivery, retry bool) {
 	}
 	r.attempts[key] = attempt
 	delay := r.policy.Delay(attempt, rand.Float64())
-	log.Printf("deadletter: queue=%s routing_key=%s event_id=%s attempt %d failed, retrying in %s", r.queue, d.RoutingKey, eventID(d.Body), attempt, delay)
+	logging.Warnf("deadletter: queue=%s routing_key=%s event_id=%s attempt %d failed, retrying in %s", r.queue, d.RoutingKey, eventID(d.Body), attempt, delay)
 	wait(ctx, delay)
 	_ = d.Nack(false, true)
 }

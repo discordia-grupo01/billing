@@ -4,6 +4,7 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	events "github.com/discordia-grupo01/events-contract/billing"
@@ -13,8 +14,10 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/discordia-grupo01/billing/internal/logging"
 	"github.com/discordia-grupo01/billing/internal/model"
 	"github.com/discordia-grupo01/billing/internal/telemetry"
+	"github.com/discordia-grupo01/events-contract/validate"
 )
 
 // batchSize bounds one run, so a big backlog doesn't hold a run forever.
@@ -64,6 +67,10 @@ func (r *Relay) publish(ctx context.Context, e model.OutboxEvent) error {
 	if err != nil {
 		return err
 	}
+	if verr := validate.Validate(e.RoutingKey, body); verr != nil && !errors.Is(verr, validate.ErrUnknownEvent) {
+		logging.Warnf("outbox: %q (id=%s) does not meet the event contract: %v", e.RoutingKey, e.ID, verr)
+	}
+
 	publishCtx := telemetry.ContextWithTraceparent(ctx, e.Traceparent)
 	publishCtx, span := otel.Tracer("github.com/discordia-grupo01/billing").Start(publishCtx, "outbox publish "+e.RoutingKey,
 		trace.WithSpanKind(trace.SpanKindProducer),

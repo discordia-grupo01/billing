@@ -1,4 +1,4 @@
-.PHONY: run test test-integration mutation build migrate migrate-down republish-premium
+.PHONY: run test test-integration mutation build migrate openapi migrate-down republish-premium
 
 -include .env
 export
@@ -41,6 +41,9 @@ mutation:
 
 build:
 	go build -o bin/api ./cmd/api
+
+openapi:
+	npx --yes swagger-cli@4.0.4 validate openapi.yaml
 
 migrate:
 	@echo "Migrando $(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"

@@ -47,12 +47,19 @@ func scanPurchase(row pgx.Row) (model.PointPurchase, error) {
 // CreatePurchase stores a new purchase as pending. ID must be set by the
 // caller: it is also the external_reference and idempotency key sent to MP.
 func (r *PointsRepository) CreatePurchase(ctx context.Context, p model.PointPurchase) (model.PointPurchase, error) {
-	row := r.pool.QueryRow(ctx, `
-		INSERT INTO point_purchases (id, user_id, package_id, points, amount_cents)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING `+purchaseColumns,
-		p.ID, p.UserID, p.PackageID, p.Points, p.AmountCents)
-	created, err := scanPurchase(row)
+	var created model.PointPurchase
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		created, err = scanPurchase(tx.QueryRow(ctx, `
+			INSERT INTO point_purchases (id, user_id, package_id, points, amount_cents)
+			VALUES ($1, $2, $3, $4, $5)
+			RETURNING `+purchaseColumns,
+			p.ID, p.UserID, p.PackageID, p.Points, p.AmountCents))
+		if err != nil {
+			return err
+		}
+		return publishAccountChanged(ctx, tx, created.UserID, changedPurchases)
+	})
 	if err != nil {
 		return model.PointPurchase{}, fmt.Errorf("repository: create purchase: %w", err)
 	}
@@ -162,14 +169,27 @@ func (r *PointsRepository) MarkUnpaid(ctx context.Context, purchaseID uuid.UUID,
 	if status != model.PurchaseStatusFailed && status != model.PurchaseStatusExpired {
 		return false, fmt.Errorf("repository: mark unpaid: unexpected status %q", status)
 	}
-	tag, err := r.pool.Exec(ctx, `
-		UPDATE point_purchases SET status = $2, status_detail = NULLIF($3, ''), updated_at = now()
-		WHERE id = $1 AND status = 'pending'`,
-		purchaseID, status, detail)
+	changed := false
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var userID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			UPDATE point_purchases SET status = $2, status_detail = NULLIF($3, ''), updated_at = now()
+			WHERE id = $1 AND status = 'pending'
+			RETURNING user_id`,
+			purchaseID, status, detail).Scan(&userID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		changed = true
+		return publishAccountChanged(ctx, tx, userID, changedPurchases)
+	})
 	if err != nil {
 		return false, fmt.Errorf("repository: mark unpaid: %w", err)
 	}
-	return tag.RowsAffected() == 1, nil
+	return changed, nil
 }
 
 // CreditPurchase marks the purchase paid and adds its points to the wallet,
@@ -210,7 +230,7 @@ func (r *PointsRepository) CreditPurchase(ctx context.Context, purchaseID uuid.U
 			return err
 		}
 		credited = true
-		return nil
+		return publishAccountChanged(ctx, tx, p.UserID, changedPurchases)
 	})
 	if err != nil {
 		return false, fmt.Errorf("repository: credit purchase: %w", err)
@@ -270,7 +290,7 @@ func (r *PointsRepository) ReversePurchase(ctx context.Context, purchaseID uuid.
 			return err
 		}
 		deducted = take
-		return nil
+		return publishAccountChanged(ctx, tx, p.UserID, changedPurchases)
 	})
 	if err != nil {
 		return 0, fmt.Errorf("repository: reverse purchase: %w", err)
@@ -325,5 +345,8 @@ func insertLedger(ctx context.Context, tx pgx.Tx, userID uuid.UUID, delta int64,
 	if err != nil {
 		return false, err
 	}
-	return tag.RowsAffected() == 1, nil
+	if tag.RowsAffected() != 1 {
+		return false, nil
+	}
+	return true, publishAccountChanged(ctx, tx, userID, changedPoints)
 }

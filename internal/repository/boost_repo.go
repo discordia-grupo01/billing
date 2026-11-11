@@ -82,6 +82,9 @@ func (r *BoostRepository) Create(ctx context.Context, b model.Boost, idempotency
 		if err := insertBoostEvent(ctx, tx, boosts.RoutingKeyRequested, inserted); err != nil {
 			return err
 		}
+		if err := publishAccountChanged(ctx, tx, b.UserID, changedBoosts); err != nil {
+			return err
+		}
 		out, created = inserted, true
 		return nil
 	})
@@ -116,13 +119,26 @@ func (r *BoostRepository) ListForUser(ctx context.Context, userID uuid.UUID, lim
 
 // MarkApplied only moves a pending boost, so a repeated answer has no effect.
 func (r *BoostRepository) MarkApplied(ctx context.Context, id uuid.UUID) (bool, error) {
-	tag, err := r.pool.Exec(ctx, `
-		UPDATE server_boosts SET status = 'active', updated_at = now()
-		WHERE id = $1 AND status = 'pending'`, id)
+	applied := false
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var userID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			UPDATE server_boosts SET status = 'active', updated_at = now()
+			WHERE id = $1 AND status = 'pending'
+			RETURNING user_id`, id).Scan(&userID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		applied = true
+		return publishAccountChanged(ctx, tx, userID, changedBoosts)
+	})
 	if err != nil {
 		return false, fmt.Errorf("repository: mark boost applied: %w", err)
 	}
-	return tag.RowsAffected() == 1, nil
+	return applied, nil
 }
 
 // Reject is the saga's compensation: it fails a pending boost and refunds its
@@ -142,7 +158,10 @@ func (r *BoostRepository) Reject(ctx context.Context, id uuid.UUID, detail strin
 			return err
 		}
 		refunded = true
-		return refund(ctx, tx, b)
+		if err := refund(ctx, tx, b); err != nil {
+			return err
+		}
+		return publishAccountChanged(ctx, tx, b.UserID, changedBoosts)
 	})
 	if err != nil {
 		return false, fmt.Errorf("repository: reject boost: %w", err)
@@ -175,7 +194,10 @@ func (r *BoostRepository) Remove(ctx context.Context, userID, id uuid.UUID) (mod
 			return err
 		}
 		out = b
-		return insertBoostEvent(ctx, tx, boosts.RoutingKeyRemoved, b)
+		if err := insertBoostEvent(ctx, tx, boosts.RoutingKeyRemoved, b); err != nil {
+			return err
+		}
+		return publishAccountChanged(ctx, tx, b.UserID, changedBoosts)
 	})
 	if err != nil {
 		return model.Boost{}, fmt.Errorf("repository: remove boost: %w", err)
@@ -186,13 +208,45 @@ func (r *BoostRepository) Remove(ctx context.Context, userID, id uuid.UUID) (mod
 // RemoveForServer marks the active boosts of a deleted server as removed,
 // without refund. servers already knows, so there is no event.
 func (r *BoostRepository) RemoveForServer(ctx context.Context, serverID uuid.UUID) (int, error) {
-	tag, err := r.pool.Exec(ctx, `
-		UPDATE server_boosts SET status = 'removed', status_detail = $2, updated_at = now()
-		WHERE server_id = $1 AND status = 'active'`, serverID, model.BoostDetailServerDeleted)
+	count := 0
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			UPDATE server_boosts SET status = 'removed', status_detail = $2, updated_at = now()
+			WHERE server_id = $1 AND status = 'active'
+			RETURNING user_id`, serverID, model.BoostDetailServerDeleted)
+		if err != nil {
+			return err
+		}
+		var owners []uuid.UUID
+		for rows.Next() {
+			var userID uuid.UUID
+			if err := rows.Scan(&userID); err != nil {
+				rows.Close()
+				return err
+			}
+			owners = append(owners, userID)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		seen := map[uuid.UUID]bool{}
+		for _, userID := range owners {
+			if seen[userID] {
+				continue
+			}
+			seen[userID] = true
+			if err := publishAccountChanged(ctx, tx, userID, changedBoosts); err != nil {
+				return err
+			}
+		}
+		count = len(owners)
+		return nil
+	})
 	if err != nil {
 		return 0, fmt.Errorf("repository: remove boosts of server: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	return count, nil
 }
 
 // RepublishPending asks again about pending boosts last requested before the
@@ -240,6 +294,9 @@ func (r *BoostRepository) CancelExpired(ctx context.Context, before time.Time, l
 				return err
 			}
 			if err := insertBoostEvent(ctx, tx, boosts.RoutingKeyCancelled, b); err != nil {
+				return err
+			}
+			if err := publishAccountChanged(ctx, tx, b.UserID, changedBoosts); err != nil {
 				return err
 			}
 			count++

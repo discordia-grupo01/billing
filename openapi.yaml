@@ -54,7 +54,7 @@ paths:
               required: [package_id]
               properties:
                 package_id: { type: string, example: points_550 }
-                payer_email: { type: string, format: email, description: Opcional, precarga el email en MP }
+                payer_email: { type: string, format: email, description: "Opcional, precarga el email en MP" }
                 return_to:
                   type: string
                   enum: [web, app]
@@ -99,7 +99,7 @@ paths:
                     items:
                       type: object
                       properties:
-                        delta: { type: integer, description: Positivo al acreditar, negativo al revertir }
+                        delta: { type: integer, description: "Positivo al acreditar, negativo al revertir" }
                         reason: { type: string, enum: [purchase, refund, chargeback] }
                         created_at: { type: string, format: date-time }
                   purchases:
@@ -316,7 +316,7 @@ paths:
         - { in: header, name: x-signature, required: true, schema: { type: string } }
         - { in: header, name: x-request-id, schema: { type: string } }
       responses:
-        "200": { description: Procesado o ignorado (tópico desconocido, recurso ajeno o inconsistente) }
+        "200": { description: "Procesado o ignorado (tópico desconocido, recurso ajeno o inconsistente)" }
         "401": { description: INVALID_SIGNATURE }
         "500": { description: Falló el procesamiento; MP reintenta }
 
@@ -419,4 +419,4 @@ components:
         active: { type: boolean }
         premium_until: { type: string, format: date-time, nullable: true }
         renews: { type: boolean }
-        mp_status: { type: string, description: Estado de la última suscripción en MP, vacío si nunca tuvo }
+        mp_status: { type: string, description: "Estado de la última suscripción en MP, vacío si nunca tuvo" }

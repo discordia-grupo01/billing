@@ -17,6 +17,8 @@ import (
 var (
 	userID     = uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	purchaseID = uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	// A second purchase, for runs that go over more than one.
+	otherPurchaseID = uuid.MustParse("33333333-3333-3333-3333-333333333333")
 )
 
 func newPointsService(store PointsStore, gw *fakeGateway) *PointsService {
@@ -577,6 +579,42 @@ func TestReconcilePendingKeepsGoingAfterErrors(t *testing.T) {
 	}
 }
 
+// A purchase that fails must not stop the batch: the ones after it still get
+// reconciled in the same run.
+func TestReconcilePendingGoesOnToTheNextPurchase(t *testing.T) {
+	cases := map[string]struct {
+		firstOrderID string
+		wantFirst    model.PurchaseStatus
+	}{
+		"after MP fails":             {firstOrderID: "ORD0", wantFirst: model.PurchaseStatusPending},
+		"after one without an order": {firstOrderID: "", wantFirst: model.PurchaseStatusExpired},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := newFakePointsStore()
+			store.purchases[otherPurchaseID] = model.PointPurchase{
+				ID: otherPurchaseID, UserID: userID, Points: seedPoints, AmountCents: seedAmount,
+				MPOrderID: tc.firstOrderID, Status: model.PurchaseStatusPending, CreatedAt: reconcileNow.Add(-2 * time.Hour),
+			}
+			pendingPurchase(store, "ORD1", time.Hour)
+			s := newReconcileService(store, &fakeGateway{
+				order:  orderWith(model.OrderStatusProcessed, "accredited"),
+				failOn: map[string]error{"GetPointsOrder ORD0": errBoom},
+			})
+
+			if seen, err := s.ReconcilePending(context.Background()); err != nil || seen != 2 {
+				t.Fatalf("seen = %d, err = %v", seen, err)
+			}
+			if got := store.purchases[otherPurchaseID].Status; got != tc.wantFirst {
+				t.Errorf("first purchase = %s, want %s", got, tc.wantFirst)
+			}
+			if got := store.purchases[purchaseID].Status; got != model.PurchaseStatusPaid {
+				t.Errorf("the purchase after it = %s, want paid", got)
+			}
+		})
+	}
+}
+
 func paidPurchase(store *fakePointsStore, age time.Duration) {
 	pendingPurchase(store, "ORD1", age)
 	p := store.purchases[purchaseID]
@@ -641,6 +679,26 @@ func TestReconcilePaidKeepsAFailedPurchaseFirstInLine(t *testing.T) {
 	}
 	if len(store.checked) != 0 {
 		t.Errorf("a failed purchase should not be marked as checked: %v", store.checked)
+	}
+}
+
+func TestReconcilePaidGoesOnToTheNextPurchase(t *testing.T) {
+	store := newFakePointsStore()
+	store.purchases[otherPurchaseID] = model.PointPurchase{
+		ID: otherPurchaseID, UserID: userID, Points: seedPoints, AmountCents: seedAmount,
+		MPOrderID: "ORD0", Status: model.PurchaseStatusPaid, CreatedAt: reconcileNow.Add(-2 * time.Hour),
+	}
+	paidPurchase(store, time.Hour)
+	s := newReconcileService(store, &fakeGateway{
+		order:  orderWith(model.OrderStatusProcessed, "accredited"),
+		failOn: map[string]error{"GetPointsOrder ORD0": errBoom},
+	})
+
+	if seen, err := s.ReconcilePaid(context.Background()); err != nil || seen != 2 {
+		t.Fatalf("seen = %d, err = %v", seen, err)
+	}
+	if !slices.Equal(store.checked, []uuid.UUID{purchaseID}) {
+		t.Errorf("checked = %v, want only the purchase after the failed one", store.checked)
 	}
 }
 

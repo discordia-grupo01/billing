@@ -79,6 +79,7 @@ Ver openapi.yaml.
 ## Eventos que publica
 Todos van firmados con `BILLING_EVENTS_HMAC_SECRET`.
 - `billing.premium_updated` - cuando cambia el Premium de un usuario
+- `billing.account_changed` - cuando cambia algo de la cuenta que el cliente muestra: el saldo y los movimientos de puntos (`points`, cada fila nueva del ledger), los boosts del usuario (`boosts`, en cada paso de la saga) o sus compras (`purchases`). Sin datos y **sin firma**: solo dice qué volver a pedir, así que `notifications` se lo empuja al usuario por WebSocket y no hace falta recargar
 - `billing.server_boost_requested` - al reservar los puntos de un boost, y de nuevo cada 5 minutos mientras siga `pending`
 - `billing.server_boost_cancelled` - a las 24 horas sin respuesta de `servers`, después de devolver los puntos
 - `billing.server_boost_removed` - cuando el dueño retira un boost, sin devolución

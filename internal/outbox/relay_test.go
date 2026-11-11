@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/discordia-grupo01/events-contract/account"
 	events "github.com/discordia-grupo01/events-contract/billing"
 	"github.com/discordia-grupo01/events-contract/boosts"
 	"github.com/discordia-grupo01/events-contract/envelope"
@@ -175,5 +176,15 @@ func TestRelayRejectsABadBoostPayload(t *testing.T) {
 	_, err := NewRelay(nil, nil, secret).sign(model.OutboxEvent{ID: uuid.New(), RoutingKey: boosts.RoutingKeyRequested, Payload: []byte(`nope`)})
 	if err == nil {
 		t.Error("expected an error")
+	}
+}
+
+func TestRelayPassesAccountChangesThroughUnsigned(t *testing.T) {
+	payload := []byte(`{"event_id":"e","occurred_at":"2026-11-11T12:00:00Z","user_id":"u","resource":"points"}`)
+
+	got, err := NewRelay(nil, nil, secret).sign(model.OutboxEvent{ID: uuid.New(), RoutingKey: account.RoutingKeyChanged, Payload: payload})
+
+	if err != nil || string(got) != string(payload) {
+		t.Errorf("sign() = %s, %v, want the payload untouched", got, err)
 	}
 }

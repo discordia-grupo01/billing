@@ -48,6 +48,8 @@ jobs:
 
       - run: go build ./...
       - run: go vet ./...
+      - name: Validar openapi.yaml
+        run: make openapi
       - name: Tests
         # -coverpkg mide la cobertura de todo internal/, no solo la del paquete
         # que tiene el test (mismo criterio que servers e identify-service).

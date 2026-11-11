@@ -13,6 +13,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/discordia-grupo01/events-contract v0.17.0 h1:XnAEpk5P8iS4WvjKR+KCKrezcyYW3d25Y+8CGEqroEo=
 github.com/discordia-grupo01/events-contract v0.17.0/go.mod h1:UFZfg1cQB18x6+DrAEIKcbXSVMHRFlz036xngu5hdas=
+github.com/discordia-grupo01/events-contract v0.20.0 h1:1c4X2iVWWrNLp29AdZ9UFJQ2YEgvtZOi3mh4pCso60M=
+github.com/discordia-grupo01/events-contract v0.20.0/go.mod h1:UFZfg1cQB18x6+DrAEIKcbXSVMHRFlz036xngu5hdas=
 github.com/gabriel-vasile/mimetype v1.4.3 h1:in2uUcidCuFcDKtdcBxlR0rJ1+fsokWf+uqxgUFjbI0=
 github.com/gabriel-vasile/mimetype v1.4.3/go.mod h1:d8uq/6HKRL6CGdk+aubisF/M5GcPfT7nKyLpA0lbSSk=
 github.com/gin-contrib/sse v0.1.0 h1:Y/yl/+YNO8GZSjAhjMsSuLt29uWRFHdHYUb5lYOV9qE=

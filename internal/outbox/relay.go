@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/discordia-grupo01/events-contract/account"
 	events "github.com/discordia-grupo01/events-contract/billing"
 	"github.com/discordia-grupo01/events-contract/boosts"
 	"go.opentelemetry.io/otel"
@@ -103,6 +104,8 @@ func (r *Relay) sign(e model.OutboxEvent) ([]byte, error) {
 		}
 		evt.Sign(e.RoutingKey, r.secret)
 		return json.Marshal(evt)
+	case account.RoutingKeyChanged:
+		return e.Payload, nil
 	default:
 		return nil, fmt.Errorf("outbox: no signer for routing key %q", e.RoutingKey)
 	}

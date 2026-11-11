@@ -1,0 +1,193 @@
+Starting...
+Gathering coverage... done in 146.991139ms
+ NOT COVERED ARITHMETIC_BASE at boost_service.go:25:26
+ NOT COVERED ARITHMETIC_BASE at boost_service.go:26:27
+      KILLED INVERT_BITWISE at boost_service.go:61:9
+      KILLED CONDITIONALS_NEGATION at boost_service.go:76:32
+      KILLED INVERT_LOGICAL at boost_service.go:76:14
+       LIVED CONDITIONALS_NEGATION at boost_service.go:58:12
+      KILLED CONDITIONALS_NEGATION at boost_service.go:73:9
+      KILLED CONDITIONALS_NEGATION at boost_service.go:85:9
+      KILLED CONDITIONALS_NEGATION at boost_service.go:88:18
+      KILLED CONDITIONALS_BOUNDARY at boost_service.go:95:11
+      KILLED CONDITIONALS_NEGATION at boost_service.go:95:11
+      KILLED ARITHMETIC_BASE at boost_service.go:106:51
+      KILLED INVERT_BITWISE at boost_service.go:131:33
+      KILLED INVERT_NEGATIVES at boost_service.go:106:51
+      KILLED INVERT_NEGATIVES at boost_service.go:110:48
+      KILLED ARITHMETIC_BASE at boost_service.go:110:48
+      KILLED INVERT_BITWISE at boost_service.go:161:33
+      KILLED CONDITIONALS_NEGATION at boost_service.go:131:44
+      KILLED CONDITIONALS_NEGATION at boost_service.go:146:50
+      KILLED CONDITIONALS_NEGATION at boost_service.go:145:16
+ NOT COVERED ARITHMETIC_BASE at checkout_guard.go:16:22
+ NOT COVERED ARITHMETIC_BASE at checkout_guard.go:17:23
+      KILLED CONDITIONALS_NEGATION at boost_service.go:140:9
+      KILLED CONDITIONALS_NEGATION at boost_service.go:161:44
+      KILLED CONDITIONALS_NEGATION at boost_service.go:151:56
+      KILLED INVERT_BITWISE at checkout_guard.go:44:9
+      KILLED CONDITIONALS_NEGATION at boost_service.go:166:9
+      KILLED CONDITIONALS_NEGATION at boost_service.go:170:59
+ NOT COVERED CONDITIONALS_NEGATION at checkout_guard.go:61:24
+ NOT COVERED CONDITIONALS_NEGATION at checkout_guard.go:63:24
+      KILLED CONDITIONALS_NEGATION at checkout_guard.go:41:12
+      KILLED INVERT_NEGATIVES at checkout_guard.go:55:63
+      KILLED ARITHMETIC_BASE at checkout_guard.go:55:63
+      KILLED CONDITIONALS_NEGATION at checkout_guard.go:51:11
+      KILLED CONDITIONALS_NEGATION at checkout_guard.go:56:9
+ NOT COVERED ARITHMETIC_BASE at points_service.go:32:27
+ NOT COVERED ARITHMETIC_BASE at points_service.go:33:27
+ NOT COVERED ARITHMETIC_BASE at points_service.go:39:33
+ NOT COVERED ARITHMETIC_BASE at points_service.go:39:28
+      KILLED CONDITIONALS_NEGATION at checkout_guard.go:73:9
+      KILLED ARITHMETIC_BASE at checkout_guard.go:87:50
+       LIVED CONDITIONALS_NEGATION at checkout_guard.go:74:58
+      KILLED INVERT_NEGATIVES at checkout_guard.go:87:50
+       LIVED CONDITIONALS_NEGATION at checkout_guard.go:79:83
+      KILLED INVERT_BITWISE at points_service.go:129:9
+      KILLED ARITHMETIC_BASE at points_service.go:67:27
+      KILLED INVERT_LOGICAL at points_service.go:138:27
+      KILLED CONDITIONALS_NEGATION at points_service.go:126:12
+      KILLED CONDITIONALS_NEGATION at points_service.go:138:48
+      KILLED CONDITIONALS_NEGATION at points_service.go:152:81
+      KILLED CONDITIONALS_NEGATION at points_service.go:138:12
+      KILLED CONDITIONALS_BOUNDARY at points_service.go:153:7
+      KILLED INVERT_LOGICAL at points_service.go:196:16
+      KILLED CONDITIONALS_NEGATION at points_service.go:185:9
+      KILLED CONDITIONALS_NEGATION at points_service.go:153:7
+      KILLED CONDITIONALS_NEGATION at points_service.go:188:64
+      KILLED CONDITIONALS_NEGATION at points_service.go:165:9
+      KILLED INVERT_BITWISE at points_service.go:233:29
+      KILLED CONDITIONALS_NEGATION at points_service.go:215:9
+      KILLED CONDITIONALS_NEGATION at points_service.go:196:9
+      KILLED CONDITIONALS_NEGATION at points_service.go:196:26
+      KILLED CONDITIONALS_NEGATION at points_service.go:233:52
+      KILLED CONDITIONALS_NEGATION at points_service.go:220:9
+      KILLED CONDITIONALS_NEGATION at points_service.go:229:9
+      KILLED CONDITIONALS_NEGATION at points_service.go:246:25
+       LIVED CONDITIONALS_NEGATION at points_service.go:239:25
+      KILLED CONDITIONALS_NEGATION at points_service.go:263:30
+      KILLED CONDITIONALS_NEGATION at points_service.go:277:9
+      KILLED INVERT_NEGATIVES at points_service.go:276:62
+      KILLED ARITHMETIC_BASE at points_service.go:276:62
+      KILLED CONDITIONALS_NEGATION at points_service.go:282:18
+       LIVED CONDITIONALS_NEGATION at points_service.go:285:96
+       LIVED INVERT_LOOPCTRL at points_service.go:288:4
+      KILLED INVERT_NEGATIVES at points_service.go:294:33
+       LIVED INVERT_LOOPCTRL at points_service.go:292:4
+      KILLED CONDITIONALS_NEGATION at points_service.go:290:63
+      KILLED ARITHMETIC_BASE at points_service.go:294:33
+      KILLED ARITHMETIC_BASE at points_service.go:309:72
+      KILLED INVERT_NEGATIVES at points_service.go:309:72
+       LIVED CONDITIONALS_NEGATION at points_service.go:297:98
+      KILLED CONDITIONALS_NEGATION at points_service.go:315:63
+      KILLED CONDITIONALS_NEGATION at points_service.go:310:9
+       LIVED CONDITIONALS_NEGATION at points_service.go:319:57
+       LIVED INVERT_LOOPCTRL at points_service.go:317:4
+      KILLED CONDITIONALS_NEGATION at points_service.go:332:65
+      KILLED CONDITIONALS_NEGATION at points_service.go:339:23
+ NOT COVERED ARITHMETIC_BASE at premium_service.go:20:36
+ NOT COVERED ARITHMETIC_BASE at premium_service.go:20:31
+      KILLED CONDITIONALS_NEGATION at points_service.go:352:66
+      KILLED CONDITIONALS_NEGATION at points_service.go:364:9
+      KILLED INVERT_BITWISE at premium_service.go:99:9
+      KILLED CONDITIONALS_NEGATION at points_service.go:367:14
+      KILLED CONDITIONALS_NEGATION at points_service.go:386:11
+      KILLED INVERT_LOGICAL at premium_service.go:103:27
+      KILLED CONDITIONALS_BOUNDARY at points_service.go:386:11
+      KILLED CONDITIONALS_NEGATION at premium_service.go:96:12
+      KILLED CONDITIONALS_NEGATION at premium_service.go:103:12
+      KILLED CONDITIONALS_NEGATION at premium_service.go:103:47
+      KILLED INVERT_LOGICAL at premium_service.go:110:56
+      KILLED CONDITIONALS_NEGATION at premium_service.go:110:68
+      KILLED CONDITIONALS_NEGATION at premium_service.go:110:18
+      KILLED INVERT_LOGICAL at premium_service.go:118:16
+      KILLED CONDITIONALS_NEGATION at premium_service.go:118:9
+      KILLED INVERT_LOGICAL at premium_service.go:121:16
+      KILLED CONDITIONALS_NEGATION at premium_service.go:128:26
+      KILLED CONDITIONALS_NEGATION at premium_service.go:124:54
+      KILLED CONDITIONALS_NEGATION at premium_service.go:121:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:131:16
+      KILLED ARITHMETIC_BASE at premium_service.go:138:40
+      KILLED CONDITIONALS_NEGATION at premium_service.go:142:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:163:9
+      KILLED ARITHMETIC_BASE at premium_service.go:149:38
+      KILLED CONDITIONALS_NEGATION at premium_service.go:151:10
+       LIVED INVERT_LOOPCTRL at premium_service.go:169:4
+      KILLED CONDITIONALS_NEGATION at premium_service.go:171:10
+      KILLED CONDITIONALS_NEGATION at premium_service.go:175:10
+      KILLED CONDITIONALS_NEGATION at premium_service.go:195:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:181:62
+      KILLED CONDITIONALS_NEGATION at premium_service.go:203:9
+      KILLED INVERT_LOGICAL at premium_service.go:218:17
+      KILLED CONDITIONALS_NEGATION at premium_service.go:206:92
+      KILLED CONDITIONALS_NEGATION at premium_service.go:218:10
+      KILLED INVERT_LOGICAL at premium_service.go:221:17
+      KILLED INVERT_LOGICAL at premium_service.go:221:72
+      KILLED CONDITIONALS_NEGATION at premium_service.go:221:10
+      KILLED CONDITIONALS_NEGATION at premium_service.go:221:37
+ NOT COVERED INVERT_LOGICAL at premium_service.go:249:27
+       LIVED CONDITIONALS_NEGATION at premium_service.go:223:72
+      KILLED CONDITIONALS_NEGATION at premium_service.go:233:9
+      KILLED INVERT_LOGICAL at premium_service.go:239:16
+ NOT COVERED CONDITIONALS_NEGATION at premium_service.go:265:29
+      KILLED CONDITIONALS_NEGATION at premium_service.go:239:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:242:19
+      KILLED CONDITIONALS_NEGATION at premium_service.go:255:35
+      KILLED CONDITIONALS_NEGATION at premium_service.go:257:11
+      KILLED INVERT_LOGICAL at premium_service.go:255:16
+      KILLED INVERT_LOGICAL at premium_service.go:278:33
+      KILLED ARITHMETIC_BASE at premium_service.go:324:71
+      KILLED CONDITIONALS_NEGATION at premium_service.go:293:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:309:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:312:25
+      KILLED INVERT_LOGICAL at premium_service.go:315:23
+      KILLED CONDITIONALS_NEGATION at premium_service.go:315:17
+      KILLED CONDITIONALS_NEGATION at premium_service.go:324:100
+      KILLED INVERT_LOGICAL at premium_service.go:331:54
+      KILLED CONDITIONALS_NEGATION at premium_service.go:331:23
+      KILLED CONDITIONALS_NEGATION at premium_service.go:331:71
+      KILLED CONDITIONALS_NEGATION at premium_service.go:343:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:359:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:374:9
+      KILLED INVERT_ASSIGNMENTS at premium_service.go:388:9
+      KILLED REMOVE_SELF_ASSIGNMENTS at premium_service.go:388:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:389:10
+      KILLED CONDITIONALS_BOUNDARY at premium_service.go:389:22
+      KILLED CONDITIONALS_NEGATION at premium_service.go:389:22
+      KILLED INVERT_NEGATIVES at premium_service.go:404:33
+      KILLED CONDITIONALS_NEGATION at premium_service.go:401:9
+      KILLED ARITHMETIC_BASE at premium_service.go:404:33
+      KILLED CONDITIONALS_NEGATION at premium_service.go:407:68
+      KILLED INVERT_LOOPCTRL at premium_service.go:409:4
+       LIVED CONDITIONALS_NEGATION at premium_service.go:412:63
+      KILLED INVERT_LOGICAL at premium_service.go:424:16
+      KILLED CONDITIONALS_NEGATION at premium_service.go:424:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:424:35
+      KILLED CONDITIONALS_NEGATION at premium_service.go:428:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:440:50
+      KILLED CONDITIONALS_NEGATION at premium_service.go:444:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:448:40
+   TIMED OUT INVERT_LOGICAL at premium_service.go:389:17
+      KILLED CONDITIONALS_NEGATION at premium_service.go:460:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:464:9
+      KILLED INVERT_BITWISE at premium_simulator.go:33:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:467:27
+      KILLED CONDITIONALS_NEGATION at premium_service.go:478:9
+      KILLED CONDITIONALS_NEGATION at premium_service.go:487:9
+      KILLED INVERT_LOGICAL at premium_simulator.go:42:39
+      KILLED CONDITIONALS_NEGATION at premium_service.go:494:9
+      KILLED ARITHMETIC_BASE at premium_simulator.go:51:31
+      KILLED INVERT_BITWISE at premium_simulator.go:56:24
+      KILLED INVERT_LOGICAL at premium_simulator.go:42:54
+      KILLED CONDITIONALS_NEGATION at premium_simulator.go:42:47
+      KILLED CONDITIONALS_NEGATION at premium_simulator.go:45:9
+      KILLED CONDITIONALS_NEGATION at premium_simulator.go:61:53
+      KILLED CONDITIONALS_NEGATION at premium_simulator.go:77:45
+      KILLED CONDITIONALS_NEGATION at premium_simulator.go:71:9
+
+Mutation testing completed in 54 seconds 843 milliseconds
+Killed: 157, Lived: 13, Not covered: 14
+Timed out: 1, Not viable: 0, Skipped: 0
+Test efficacy: 92.35%
+Mutator coverage: 92.39%

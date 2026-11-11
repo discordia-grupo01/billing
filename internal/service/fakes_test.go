@@ -43,6 +43,9 @@ func (g *fakeGateway) CreatePointsOrder(_ context.Context, req model.PointsOrder
 }
 
 func (g *fakeGateway) GetPointsOrder(_ context.Context, orderID string) (model.PointsOrder, error) {
+	if err := g.failOn["GetPointsOrder "+orderID]; err != nil {
+		return model.PointsOrder{}, err
+	}
 	if g.getErr != nil {
 		return model.PointsOrder{}, g.getErr
 	}
@@ -208,6 +211,8 @@ func (f *fakePointsStore) ListPaidPurchasesToRecheck(_ context.Context, createdA
 			out = append(out, p)
 		}
 	}
+	// Like the repository for purchases not checked yet: oldest first.
+	slices.SortFunc(out, func(a, b model.PointPurchase) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	return out, nil
 }
 

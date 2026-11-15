@@ -69,13 +69,15 @@ func (h *WebhookHandler) Register(r gin.IRouter) {
 	r.POST("/webhooks/mercadopago", h.receive)
 }
 
+// notification is the body Mercado Pago sends. The handler only trusts the
+// signature and the data.id of the query string; the body is informative.
 type notification struct {
 	Type   string `json:"type"`
 	Action string `json:"action"`
 	Data   struct {
-		ID flexibleID `json:"id"`
+		ID flexibleID `json:"id" swaggertype:"string"`
 	} `json:"data"`
-}
+} // @name WebhookNotification
 
 // flexibleID accepts ids sent as strings or as numbers: some topics use one,
 // some the other.
@@ -95,6 +97,23 @@ func (f *flexibleID) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// receive validates the signature and processes the notification.
+//
+// @Summary      Notificaciones de Mercado Pago
+// @Description  Pública (sin JWT). Valida `x-signature` con `MP_WEBHOOK_SECRET` y una tolerancia de 5 minutos. Tópicos: `order`, `subscription_preapproval`, `subscription_authorized_payment`, `payment`, `topic_chargebacks_wh`. Cada aviso vuelve a consultar el recurso en Mercado Pago, así que repetirlo no cambia nada. Un aviso con firma inválida nunca recibe 2xx.
+// @Tags         Webhooks
+// @Accept       json
+// @Produce      json
+// @Param        type          query   string                false  "Tópico de la notificación"
+// @Param        data.id       query   string                false  "ID del recurso que cambió; la firma lo cubre"
+// @Param        x-signature   header  string                true   "Firma de Mercado Pago (`ts=…,v1=…`)"
+// @Param        x-request-id  header  string                false  "ID del pedido, también cubierto por la firma"
+// @Param        body          body    notification          false  "Cuerpo informativo de la notificación"
+// @Success      200  "Procesado o ignorado (tópico desconocido, recurso ajeno o inconsistente)"
+// @Failure      401  {object}  errorBody  "INVALID_SIGNATURE"
+// @Failure      413  {object}  errorBody  "El cuerpo supera los 64 KB"
+// @Failure      500  {object}  errorBody  "INTERNAL_ERROR, falló el procesamiento; Mercado Pago reintenta"
+// @Router       /webhooks/mercadopago [post]
 func (h *WebhookHandler) receive(c *gin.Context) {
 	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, maxWebhookBody))
 	if err != nil {

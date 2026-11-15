@@ -38,6 +38,22 @@ const (
 	shutdownTimeout           = 20 * time.Second
 )
 
+// @title        Discordia - Billing
+// @version      1.0.0
+// @description  Premium y puntos con Mercado Pago, y boosts de servidor pagados con puntos.
+// @description
+// @description  Las rutas `/v1/billing/**` requieren el access token de identify (`Authorization: Bearer <JWT>`, HS256): el servicio lo verifica aunque Kong también lo haga, porque mueve dinero. Los montos van en centavos de ARS.
+// @description
+// @description  Todos los errores tienen la forma `{"error": {"code": "...", "message": "...", "details": {}}}`; `details` solo viene en algunos, como `INSUFFICIENT_POINTS`.
+// @description
+// @description  Las rutas de simulación de desarrollo (`/dev/billing/simulate-*`) solo existen con `BILLING_DEV_TOOLS=true`, nunca en producción, y no forman parte de este contrato.
+// @host         localhost:8080
+// @schemes      http
+// @BasePath     /
+// @securityDefinitions.apikey  BearerAuth
+// @in                          header
+// @name                        Authorization
+// @description                 Escribir "Bearer " seguido del JWT.
 func main() {
 	logging.MustSetup("billing")
 	defer logging.Flush()
@@ -100,20 +116,10 @@ func main() {
 	}
 
 	// /livez: solo confirma que el proceso esta vivo. No toca la BDD.
-	router.GET("/livez", func(c *gin.Context) {
-		c.String(http.StatusOK, "ok")
-	})
+	router.GET("/livez", handler.Livez)
 
 	// /readyz: confirma que el servicio puede operar (llega a la BDD).
-	router.GET("/readyz", func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
-		defer cancel()
-		if err := pool.Ping(ctx); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "ready"})
-	})
+	router.GET("/readyz", handler.Readyz(pool))
 
 	router.GET("/", func(c *gin.Context) {
 		c.String(http.StatusOK, "discordia-billing up")

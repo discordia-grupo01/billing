@@ -7,3 +7,4 @@
 /.contract-venv/
 /schemathesis-report/
 /.contract-billing-api*
+/.schemathesis/

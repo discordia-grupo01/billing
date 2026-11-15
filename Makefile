@@ -1,4 +1,4 @@
-.PHONY: run test test-integration mutation build migrate openapi migrate-down republish-premium
+.PHONY: run test test-integration mutation build migrate openapi migrate-down republish-premium contract-deps-up contract-deps-down contract-test
 
 -include .env
 export
@@ -65,3 +65,18 @@ migrate-down:
 republish-premium:
 	@echo "Republicando Premium en $(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
 	@go run ./cmd/republish-premium
+
+# Tests de contrato (Schemathesis contra el servicio real). Las dependencias van
+# en contenedores propios y puertos fijos (Postgres 55503, RabbitMQ 55513).
+contract-deps-up:
+	docker run -d --rm --name contract-billing-pg -p 55503:5432 -e POSTGRES_USER=discordia -e POSTGRES_PASSWORD=discordia -e POSTGRES_DB=discordia_billing_contract postgres:16-alpine
+	docker run -d --rm --name contract-billing-rabbitmq -p 55513:5672 rabbitmq:3-alpine
+	until docker exec contract-billing-pg pg_isready -h 127.0.0.1 -U discordia -d discordia_billing_contract >/dev/null 2>&1; do sleep 1; done
+	until docker exec contract-billing-rabbitmq rabbitmq-diagnostics -q ping >/dev/null 2>&1; do sleep 1; done
+	go run -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@v4.17.1 -path migrations -database "postgres://discordia:discordia@localhost:55503/discordia_billing_contract?sslmode=disable" up
+
+contract-deps-down:
+	-docker rm -f contract-billing-pg contract-billing-rabbitmq
+
+contract-test:
+	bash scripts/contract-test.sh

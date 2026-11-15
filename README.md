@@ -89,7 +89,7 @@ Todos van firmados con `BILLING_EVENTS_HMAC_SECRET`.
 ## Eventos que consume
 Cola `billing.servers_events`:
 - `servers.server_boost_applied` - pasa el boost a `active`
-- `servers.server_boost_rejected` - pasa el boost a `failed` y devuelve los puntos
+- `servers.server_boost_rejected` - pasa el boost a `failed` y devuelve los puntos; el motivo (`server_not_found`, `server_suspended`, `not_a_member`, `max_level_reached` o `cancelled`) queda en `status_detail`
 - `servers.server_deleted` - pasa a `removed` los boosts activos del servidor, sin devolución
 
 Los dos primeros se verifican con la firma antes de tocar nada. Solo una regla de negocio rechaza un boost: si falla la base, el evento se reencola y los puntos no se devuelven.

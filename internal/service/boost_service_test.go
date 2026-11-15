@@ -29,8 +29,9 @@ type fakeBoostStore struct {
 	gotKey         string
 	got            model.Boost
 	getErr         error
-	list           []model.Boost
+	params         model.BoostListParams
 	limit          int
+	offset         int
 	applied        []uuid.UUID
 	rejected       map[uuid.UUID]string
 	removedServers []uuid.UUID
@@ -44,9 +45,13 @@ func (f *fakeBoostStore) Create(_ context.Context, b model.Boost, key string) (m
 	return f.created, f.wasCreated, f.createErr
 }
 func (f *fakeBoostStore) Get(context.Context, uuid.UUID) (model.Boost, error) { return f.got, f.getErr }
-func (f *fakeBoostStore) ListForUser(_ context.Context, _ uuid.UUID, limit int) ([]model.Boost, error) {
-	f.limit = limit
-	return f.list, nil
+func (f *fakeBoostStore) ListForUser(_ context.Context, _ uuid.UUID, params model.BoostListParams) (model.BoostPage, error) {
+	f.params = params
+	return model.BoostPage{Limit: params.Limit, Offset: params.Offset}, nil
+}
+func (f *fakeBoostStore) ListServersForUser(_ context.Context, _ uuid.UUID, limit, offset int) (model.BoostedServerPage, error) {
+	f.limit, f.offset = limit, offset
+	return model.BoostedServerPage{Limit: limit, Offset: offset}, nil
 }
 func (f *fakeBoostStore) MarkApplied(_ context.Context, id uuid.UUID) (bool, error) {
 	f.applied = append(f.applied, id)
@@ -156,15 +161,27 @@ func TestBoostGetHidesOtherUsersBoosts(t *testing.T) {
 	}
 }
 
-func TestBoostListClampsTheLimit(t *testing.T) {
+func TestBoostListClampsThePage(t *testing.T) {
 	store := &fakeBoostStore{}
 	svc := newBoostService(store)
-	for give, want := range map[int]int{0: defaultBoostLimit, 10: 10, 1000: maxBoostLimit} {
-		if _, err := svc.List(context.Background(), uuid.New(), give); err != nil {
+	serverID := uuid.New()
+	cases := []struct{ limit, offset, wantLimit, wantOffset int }{
+		{0, 0, defaultBoostLimit, 0},
+		{10, 20, 10, 20},
+		{1000, -5, maxBoostLimit, 0},
+	}
+	for _, c := range cases {
+		if _, err := svc.List(context.Background(), uuid.New(), model.BoostListParams{ServerID: &serverID, Limit: c.limit, Offset: c.offset}); err != nil {
 			t.Fatal(err)
 		}
-		if store.limit != want {
-			t.Errorf("limit(%d) = %d, want %d", give, store.limit, want)
+		if store.params.Limit != c.wantLimit || store.params.Offset != c.wantOffset || store.params.ServerID != &serverID {
+			t.Errorf("List(%d, %d) = %+v", c.limit, c.offset, store.params)
+		}
+		if _, err := svc.ListServers(context.Background(), uuid.New(), c.limit, c.offset); err != nil {
+			t.Fatal(err)
+		}
+		if store.limit != c.wantLimit || store.offset != c.wantOffset {
+			t.Errorf("ListServers(%d, %d) = %d, %d", c.limit, c.offset, store.limit, store.offset)
 		}
 	}
 }

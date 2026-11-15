@@ -98,24 +98,82 @@ func (r *BoostRepository) Get(ctx context.Context, id uuid.UUID) (model.Boost, e
 	return scanBoost(r.pool.QueryRow(ctx, `SELECT `+boostColumns+` FROM server_boosts WHERE id = $1`, id))
 }
 
-func (r *BoostRepository) ListForUser(ctx context.Context, userID uuid.UUID, limit int) ([]model.Boost, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT `+boostColumns+` FROM server_boosts
-		WHERE user_id = $1 ORDER BY created_at DESC, id LIMIT $2`, userID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("repository: list boosts: %w", err)
-	}
-	defer rows.Close()
-	out := make([]model.Boost, 0)
-	for rows.Next() {
-		b, err := scanBoost(rows)
-		if err != nil {
-			return nil, fmt.Errorf("repository: list boosts: %w", err)
+// ListForUser returns a page of the user's boosts, newest first, and the counts
+// for the whole filter. Both reads see the same snapshot.
+func (r *BoostRepository) ListForUser(ctx context.Context, userID uuid.UUID, p model.BoostListParams) (model.BoostPage, error) {
+	page := model.BoostPage{Boosts: make([]model.Boost, 0), Limit: p.Limit, Offset: p.Offset}
+	err := pgx.BeginTxFunc(ctx, r.pool, readSnapshot, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
+			SELECT COUNT(*), COUNT(*) FILTER (WHERE status = 'active') FROM server_boosts
+			WHERE user_id = $1 AND ($2::uuid IS NULL OR server_id = $2)`, userID, p.ServerID,
+		).Scan(&page.Total, &page.Active); err != nil {
+			return err
 		}
-		out = append(out, b)
+		rows, err := tx.Query(ctx, `
+			SELECT `+boostColumns+` FROM server_boosts
+			WHERE user_id = $1 AND ($2::uuid IS NULL OR server_id = $2)
+			ORDER BY created_at DESC, id LIMIT $3 OFFSET $4`, userID, p.ServerID, p.Limit, p.Offset)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			b, err := scanBoost(rows)
+			if err != nil {
+				return err
+			}
+			page.Boosts = append(page.Boosts, b)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return model.BoostPage{}, fmt.Errorf("repository: list boosts: %w", err)
 	}
-	return out, rows.Err()
+	return page, nil
 }
+
+// ListServersForUser returns a page of the servers the user boosted, the most
+// recently boosted first, with how many of their boosts are in each status.
+func (r *BoostRepository) ListServersForUser(ctx context.Context, userID uuid.UUID, limit, offset int) (model.BoostedServerPage, error) {
+	page := model.BoostedServerPage{Servers: make([]model.BoostedServer, 0), Limit: limit, Offset: offset}
+	err := pgx.BeginTxFunc(ctx, r.pool, readSnapshot, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(DISTINCT server_id) FROM server_boosts WHERE user_id = $1`, userID,
+		).Scan(&page.Total); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT server_id,
+			       COUNT(*) FILTER (WHERE status = 'active'),
+			       COUNT(*) FILTER (WHERE status = 'pending'),
+			       COUNT(*) FILTER (WHERE status = 'failed'),
+			       COUNT(*) FILTER (WHERE status = 'removed'),
+			       MAX(created_at)
+			FROM server_boosts WHERE user_id = $1
+			GROUP BY server_id
+			ORDER BY MAX(created_at) DESC, server_id LIMIT $2 OFFSET $3`, userID, limit, offset)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s model.BoostedServer
+			if err := rows.Scan(&s.ServerID, &s.Active, &s.Pending, &s.Failed, &s.Removed, &s.LastBoostAt); err != nil {
+				return err
+			}
+			page.Servers = append(page.Servers, s)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return model.BoostedServerPage{}, fmt.Errorf("repository: list boosted servers: %w", err)
+	}
+	return page, nil
+}
+
+// readSnapshot makes a page and its total agree even if a boost changes between
+// the two queries.
+var readSnapshot = pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
 
 // MarkApplied only moves a pending boost, so a repeated answer has no effect.
 func (r *BoostRepository) MarkApplied(ctx context.Context, id uuid.UUID) (bool, error) {

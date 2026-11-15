@@ -38,6 +38,22 @@ const (
 	shutdownTimeout           = 20 * time.Second
 )
 
+// @title        Discordia - Billing
+// @version      1.0.0
+// @description  Premium y puntos con Mercado Pago, y boosts de servidor pagados con puntos.
+// @description
+// @description  Las rutas `/v1/billing/**` requieren el access token de identify (`Authorization: Bearer <JWT>`, HS256): el servicio lo verifica aunque Kong también lo haga, porque mueve dinero. Los montos van en centavos de ARS.
+// @description
+// @description  Todos los errores tienen la forma `{"error": {"code": "...", "message": "...", "details": {}}}`; `details` solo viene en algunos, como `INSUFFICIENT_POINTS`.
+// @description
+// @description  Las rutas de simulación de desarrollo (`/dev/billing/simulate-*`) solo existen con `BILLING_DEV_TOOLS=true`, nunca en producción, y no forman parte de este contrato.
+// @host         localhost:8080
+// @schemes      http
+// @BasePath     /
+// @securityDefinitions.apikey  BearerAuth
+// @in                          header
+// @name                        Authorization
+// @description                 Escribir "Bearer " seguido del JWT.
 func main() {
 	logging.MustSetup("billing")
 	defer logging.Flush()

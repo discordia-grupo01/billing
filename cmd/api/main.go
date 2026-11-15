@@ -100,20 +100,10 @@ func main() {
 	}
 
 	// /livez: solo confirma que el proceso esta vivo. No toca la BDD.
-	router.GET("/livez", func(c *gin.Context) {
-		c.String(http.StatusOK, "ok")
-	})
+	router.GET("/livez", handler.Livez)
 
 	// /readyz: confirma que el servicio puede operar (llega a la BDD).
-	router.GET("/readyz", func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
-		defer cancel()
-		if err := pool.Ping(ctx); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "ready"})
-	})
+	router.GET("/readyz", handler.Readyz(pool))
 
 	router.GET("/", func(c *gin.Context) {
 		c.String(http.StatusOK, "discordia-billing up")

@@ -1,473 +1,1081 @@
-openapi: 3.0.3
+openapi: 3.0.0
 info:
-  title: Discordia - billing
-  version: "1.0.0"
-  description: |
-    Premium y puntos con Mercado Pago. Las rutas /v1/billing requieren el
-    access token de identify (Bearer, HS256). Los montos van en centavos de ARS.
+  contact: {}
+  description: >-
+    Premium y puntos con Mercado Pago, y boosts de servidor pagados con puntos.
+
+
+    Las rutas `/v1/billing/**` requieren el access token de identify (`Authorization: Bearer <JWT>`, HS256): el servicio lo verifica aunque Kong también lo haga, porque mueve dinero. Los montos van en centavos de ARS.
+
+
+    Todos los errores tienen la forma `{"error": {"code": "...", "message": "...", "details": {}}}`; `details` solo viene en algunos, como `INSUFFICIENT_POINTS`.
+
+
+    Las rutas de simulación de desarrollo (`/dev/billing/simulate-*`) solo existen con `BILLING_DEV_TOOLS=true`, nunca en producción, y no forman parte de este contrato.
+  title: Discordia - Billing
+  version: 1.0.0
 paths:
   /livez:
     get:
-      summary: Liveness check
-      responses:
-        "200": { description: OK }
-  /readyz:
-    get:
-      summary: Readiness check
-      responses:
-        "200": { description: OK }
-        "503": { description: Dependencias no disponibles }
-
-  /v1/billing/points/packages:
-    get:
-      summary: Paquetes de puntos a la venta
-      security: [{ bearer: [] }]
+      description: Confirma que el proceso está vivo. No consulta ninguna dependencia.
       responses:
         "200":
-          description: OK
+          description: ok
+          content:
+            text/plain:
+              schema:
+                type: string
+      summary: Liveness check
+      tags:
+        - Health
+  /readyz:
+    get:
+      description: "Confirma que el servicio puede operar: llega a la base de datos."
+      responses:
+        "200":
+          description: Listo para recibir tráfico
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  packages:
-                    type: array
-                    items: { $ref: "#/components/schemas/Package" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-
-  /v1/billing/points/checkout:
-    post:
-      summary: Crea una compra de puntos y devuelve la página de pago de MP
-      description: |
-        Al terminar, MP vuelve a <CHECKOUT_RETURN_URL>/billing/return?kind=points&purchase_id=…
-        La acreditación la hace el webhook; la pantalla de retorno consulta
-        GET /v1/billing/purchases/{id} hasta que deje de estar pending.
-      security: [{ bearer: [] }]
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: La base de datos no responde
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+      summary: Readiness check
+      tags:
+        - Health
+  /v1/billing/boosts:
+    get:
+      description: Todos los estados, también los retirados (`removed`). Con
+        `server_id`, solo los de ese servidor. `total` y `active` cuentan todos
+        los boosts del filtro, no solo los de la página.
       parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
+        - description: Solo los boosts de este servidor
+          in: query
+          name: server_id
+          schema:
+            type: string
+            format: uuid
+        - description: Tamaño de la página
+          in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - description: Cuántos boosts saltear
+          in: query
+          name: offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Página de boosts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoostPage"
+        "400":
+          description: INVALID_REQUEST
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Mis boosts, del más nuevo al más viejo, por páginas
+      tags:
+        - Boosts
+    post:
+      description: "Reserva los puntos y le pregunta a servers si puede aplicar el
+        boost, así que responde 202 con el boost en `pending`. Hay que consultar
+        `GET /v1/billing/boosts/{id}` hasta que deje de estar `pending`:
+        normalmente tarda segundos. Si servers lo rechaza (servidor inexistente
+        o suspendido, quien boostea no es miembro, o el servidor ya tiene los 30
+        boosts del último nivel) queda `failed` y los puntos vuelven. Si no
+        responde en 24 horas, también vuelven. Con `Idempotency-Key`, un doble
+        clic devuelve el mismo boost y cobra una sola vez."
+      parameters:
+        - description: Clave única por intento, por ejemplo un UUID generado al abrir la
+            pantalla. Repetir el pedido con la misma clave devuelve el mismo
+            boost en vez de crear otro; se recuerda durante 24 horas.
+          in: header
+          name: Idempotency-Key
+          schema:
+            type: string
+            maxLength: 255
       requestBody:
-        required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [package_id]
-              properties:
-                package_id: { type: string, example: points_550 }
-                payer_email: { type: string, format: email, description: "Opcional, precarga el email en MP" }
-                return_to:
-                  type: string
-                  enum: [web, app]
-                  default: web
-                  description: Con `app`, Mercado Pago vuelve a `<CHECKOUT_RETURN_URL>/app-link/billing/return`, que abre la app mobile
+              $ref: "#/components/schemas/BoostRequest"
+        description: Servidor a boostear
+        required: true
+      responses:
+        "202":
+          description: Boost en pending, con los puntos ya descontados
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Boost"
+        "400":
+          description: INVALID_REQUEST
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: INSUFFICIENT_POINTS, con balance, cost y missing en details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: IDEMPOTENCY_KEY_REUSED, la Idempotency-Key ya se usó para otro
+            servidor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Boostea un servidor con 100 puntos
+      tags:
+        - Boosts
+  "/v1/billing/boosts/{id}":
+    delete:
+      description: Se puede retirar aunque ya no seas miembro del servidor.
+      parameters:
+        - description: ID del boost
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Boost en removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Boost"
+        "401":
+          description: UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: BOOST_NOT_FOUND; también si el boost es de otro usuario o el id no
+            es un UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: BOOST_NOT_ACTIVE, solo se puede retirar un boost activo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Retira un boost activo propio, sin devolver los puntos
+      tags:
+        - Boosts
+    get:
+      parameters:
+        - description: ID del boost
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: El boost
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Boost"
+        "401":
+          description: UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: BOOST_NOT_FOUND; también si el boost es de otro usuario o el id no
+            es un UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Estado de un boost propio
+      tags:
+        - Boosts
+  /v1/billing/boosts/servers:
+    get:
+      description: Un servidor por fila, el boosteado más recientemente primero, con
+        cuántos de mis boosts hay ahí en cada estado. Entra si tengo algún
+        boost, en cualquier estado.
+      parameters:
+        - description: Tamaño de la página
+          in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - description: Cuántos servidores saltear
+          in: query
+          name: offset
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Página de servidores
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoostedServerPage"
+        "400":
+          description: INVALID_REQUEST
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Servidores que boosteé, por páginas
+      tags:
+        - Boosts
+  /v1/billing/points:
+    get:
+      parameters:
+        - description: Cuántos movimientos y cuántas compras devolver; aplica a las dos
+            listas
+          in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Saldo y listas
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Points"
+        "400":
+          description: INVALID_REQUEST
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Saldo, últimos movimientos y últimas compras
+      tags:
+        - Points
+  /v1/billing/points/checkout:
+    post:
+      description: Al terminar, Mercado Pago vuelve a
+        `<CHECKOUT_RETURN_URL>/billing/return?kind=points&purchase_id=…`. La
+        acreditación la hace el webhook; la pantalla de retorno consulta `GET
+        /v1/billing/purchases/{id}` hasta que la compra deje de estar `pending`.
+      parameters:
+        - description: Clave única por intento de compra, por ejemplo un UUID generado al
+            abrir la pantalla. Repetir el pedido con la misma clave devuelve el
+            mismo checkout en vez de crear otro; se recuerda durante 24 horas.
+          in: header
+          name: Idempotency-Key
+          schema:
+            type: string
+            maxLength: 255
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PointsCheckoutRequest"
+        description: Paquete a comprar
+        required: true
       responses:
         "201":
           description: Compra creada
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  purchase_id: { type: string, format: uuid }
-                  checkout_url: { type: string, format: uri }
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "409": { $ref: "#/components/responses/CheckoutInProgress" }
-        "422": { $ref: "#/components/responses/IdempotencyKeyReused" }
-        "500": { $ref: "#/components/responses/InternalError" }
-
-  /v1/billing/points:
-    get:
-      summary: Saldo, últimos movimientos y últimas compras
-      security: [{ bearer: [] }]
-      parameters:
-        - in: query
-          name: limit
-          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
-          description: Aplica a ledger y a purchases
-      responses:
-        "200":
-          description: OK
+                $ref: "#/components/schemas/Checkout"
+        "400":
+          description: INVALID_REQUEST o UNKNOWN_PACKAGE
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  balance: { type: integer }
-                  ledger:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        delta: { type: integer, description: "Positivo al acreditar, negativo al revertir" }
-                        reason: { type: string, enum: [purchase, refund, chargeback] }
-                        created_at: { type: string, format: date-time }
-                  purchases:
-                    type: array
-                    items: { $ref: "#/components/schemas/Purchase" }
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-
-  /v1/billing/purchases/{id}:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: CHECKOUT_IN_PROGRESS, otro pedido con la misma Idempotency-Key
+            sigue en curso
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: IDEMPOTENCY_KEY_REUSED, la Idempotency-Key ya se usó para otro pedido
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Crea una compra de puntos y devuelve la página de pago de Mercado Pago
+      tags:
+        - Points
+  /v1/billing/points/packages:
     get:
-      summary: Estado de una compra propia (pantalla de retorno)
-      security: [{ bearer: [] }]
-      parameters:
-        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      description: Los precios van en centavos de ARS.
       responses:
         "200":
-          description: OK
+          description: Paquetes disponibles
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Purchase" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404":
-          description: PURCHASE_NOT_FOUND (también si es de otro usuario)
+              schema:
+                $ref: "#/components/schemas/PackageList"
+        "401":
+          description: UNAUTHORIZED
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Paquetes de puntos a la venta
+      tags:
+        - Points
   /v1/billing/premium:
     get:
-      summary: Estado de Premium del usuario
-      security: [{ bearer: [] }]
       parameters:
-        - in: query
+        - description: Con `1` o `true`, consulta a Mercado Pago antes de responder (usar
+            al volver del checkout)
+          in: query
           name: refresh
-          schema: { type: string, enum: ["1", "true"] }
-          description: Consulta a MP antes de responder (usar al volver del checkout)
+          schema:
+            type: string
+            enum:
+              - "1"
+              - "true"
       responses:
         "200":
-          description: OK
+          description: Estado de Premium
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Premium" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-
+              schema:
+                $ref: "#/components/schemas/Premium"
+        "401":
+          description: UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Estado de Premium del usuario
+      tags:
+        - Premium
+  /v1/billing/premium/cancel:
+    post:
+      responses:
+        "200":
+          description: Premium sin renovación
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Premium"
+        "401":
+          description: UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: NO_LIVE_SUBSCRIPTION, no hay una suscripción que cancelar
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Cancela la renovación; Premium sigue hasta premium_until
+      tags:
+        - Premium
   /v1/billing/premium/checkout:
     post:
-      summary: Crea la suscripción en MP y devuelve la página donde se carga la tarjeta
-      description: Al terminar, MP vuelve a <CHECKOUT_RETURN_URL>/billing/return?kind=premium
-      security: [{ bearer: [] }]
+      description: Al terminar, Mercado Pago vuelve a
+        `<CHECKOUT_RETURN_URL>/billing/return?kind=premium`. El cuerpo es
+        opcional.
       parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
+        - description: Clave única por intento de compra, por ejemplo un UUID generado al
+            abrir la pantalla. Repetir el pedido con la misma clave devuelve el
+            mismo checkout en vez de crear otro; se recuerda durante 24 horas.
+          in: header
+          name: Idempotency-Key
+          schema:
+            type: string
+            maxLength: 255
       requestBody:
-        required: false
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                payer_email:
-                  type: string
-                  format: email
-                  description: Obligatorio en producción; en sandbox se usa el comprador de prueba
-                return_to:
-                  type: string
-                  enum: [web, app]
-                  default: web
-                  description: Con `app`, Mercado Pago vuelve a `<CHECKOUT_RETURN_URL>/app-link/billing/return`, que abre la app mobile
+              $ref: "#/components/schemas/PremiumCheckoutRequest"
+        description: Datos del pagador
       responses:
         "201":
           description: Suscripción creada
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  checkout_url: { type: string, format: uri }
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "409":
-          description: |
-            ALREADY_SUBSCRIBED, ya tiene una suscripción que MP sigue cobrando;
-            o CHECKOUT_IN_PROGRESS, otro pedido con la misma Idempotency-Key sigue en curso
+                $ref: "#/components/schemas/PremiumCheckout"
+        "400":
+          description: INVALID_REQUEST o PAYER_EMAIL_REQUIRED
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-        "422": { $ref: "#/components/responses/IdempotencyKeyReused" }
-
-  /v1/billing/premium/cancel:
-    post:
-      summary: Cancela la renovación; Premium sigue hasta premium_until
-      security: [{ bearer: [] }]
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: ALREADY_SUBSCRIBED, ya tiene una suscripción que Mercado Pago sigue
+            cobrando; o CHECKOUT_IN_PROGRESS, otro pedido con la misma
+            Idempotency-Key sigue en curso
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: IDEMPOTENCY_KEY_REUSED, la Idempotency-Key ya se usó para otro pedido
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Crea la suscripción y devuelve la página donde se carga la tarjeta
+      tags:
+        - Premium
+  "/v1/billing/purchases/{id}":
+    get:
+      description: Lo consulta la pantalla de retorno del checkout hasta que la compra
+        deja de estar `pending`.
+      parameters:
+        - description: ID de la compra
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
       responses:
         "200":
-          description: OK
+          description: La compra
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Premium" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "409":
-          description: NO_LIVE_SUBSCRIPTION
+              schema:
+                $ref: "#/components/schemas/Purchase"
+        "401":
+          description: UNAUTHORIZED
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-
-  /v1/billing/boosts:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: PURCHASE_NOT_FOUND; también si la compra es de otro usuario o el id
+            no es un UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Estado de una compra propia
+      tags:
+        - Points
+  /webhooks/mercadopago:
     post:
-      summary: Boostea un servidor con 100 puntos
-      description: |
-        Reserva los puntos y le pregunta a servers si puede aplicar el boost, así
-        que responde 202 con el boost en pending. Consultar
-        GET /v1/billing/boosts/{id} hasta que deje de estar pending: normalmente
-        tarda segundos. Si servers lo rechaza (servidor inexistente o suspendido,
-        quien boostea no es miembro, o el servidor ya tiene los 30 boosts del
-        último nivel) queda failed y los puntos vuelven. Si no
-        responde en 24 horas, también vuelven. Con Idempotency-Key, un doble clic
-        devuelve el mismo boost y cobra una sola vez.
-      security: [{ bearer: [] }]
+      description: "Pública (sin JWT). Valida `x-signature` con `MP_WEBHOOK_SECRET` y
+        una tolerancia de 5 minutos. Tópicos: `order`,
+        `subscription_preapproval`, `subscription_authorized_payment`,
+        `payment`, `topic_chargebacks_wh`. Cada aviso vuelve a consultar el
+        recurso en Mercado Pago, así que repetirlo no cambia nada. Un aviso con
+        firma inválida nunca recibe 2xx."
       parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
+        - description: Tópico de la notificación
+          in: query
+          name: type
+          schema:
+            type: string
+        - description: ID del recurso que cambió; la firma lo cubre
+          in: query
+          name: data.id
+          schema:
+            type: string
+        - description: Firma de Mercado Pago (`ts=…,v1=…`)
+          in: header
+          name: x-signature
+          required: true
+          schema:
+            type: string
+        - description: ID del pedido, también cubierto por la firma
+          in: header
+          name: x-request-id
+          schema:
+            type: string
       requestBody:
-        required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [server_id]
-              properties:
-                server_id: { type: string, format: uuid }
-      responses:
-        "202":
-          description: Boost en pending, con los puntos ya descontados
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Boost" }
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "409":
-          description: INSUFFICIENT_POINTS, con balance, cost y missing en details
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-        "422": { $ref: "#/components/responses/IdempotencyKeyReused" }
-    get:
-      summary: Mis boosts, del más nuevo al más viejo, por páginas
-      description: |
-        Todos los estados, también los retirados (removed). Con server_id, solo
-        los de ese servidor. total y active cuentan todos los boosts del filtro,
-        no solo los de la página.
-      security: [{ bearer: [] }]
-      parameters:
-        - { in: query, name: server_id, schema: { type: string, format: uuid } }
-        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
-        - { in: query, name: offset, schema: { type: integer, minimum: 0, default: 0 } }
+              $ref: "#/components/schemas/WebhookNotification"
+        description: Cuerpo informativo de la notificación
       responses:
         "200":
-          description: OK
+          description: Procesado o ignorado (tópico desconocido, recurso ajeno o
+            inconsistente)
+        "401":
+          description: INVALID_SIGNATURE
           content:
             application/json:
               schema:
-                type: object
-                required: [boosts, total, active, limit, offset]
-                properties:
-                  boosts:
-                    type: array
-                    items: { $ref: "#/components/schemas/Boost" }
-                  total: { type: integer, example: 13 }
-                  active: { type: integer, example: 7 }
-                  limit: { type: integer, example: 10 }
-                  offset: { type: integer, example: 0 }
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-
-  /v1/billing/boosts/servers:
-    get:
-      summary: Servidores que boosteé, por páginas
-      description: |
-        Un servidor por fila, el boosteado más recientemente primero, con cuántos
-        de mis boosts hay ahí en cada estado. Entra si tengo algún boost, en
-        cualquier estado. El nombre y el nivel se piden a servers.
-      security: [{ bearer: [] }]
-      parameters:
-        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
-        - { in: query, name: offset, schema: { type: integer, minimum: 0, default: 0 } }
-      responses:
-        "200":
-          description: OK
+                $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: El cuerpo supera los 64 KB
           content:
             application/json:
               schema:
-                type: object
-                required: [servers, total, limit, offset]
-                properties:
-                  servers:
-                    type: array
-                    items: { $ref: "#/components/schemas/BoostedServer" }
-                  total: { type: integer, example: 14 }
-                  limit: { type: integer, example: 10 }
-                  offset: { type: integer, example: 0 }
-        "400": { $ref: "#/components/responses/BadRequest" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-
-  /v1/billing/boosts/{id}:
-    parameters:
-      - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
-    get:
-      summary: Estado de un boost propio
-      security: [{ bearer: [] }]
-      responses:
-        "200":
-          description: OK
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: INTERNAL_ERROR, falló el procesamiento; Mercado Pago reintenta
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/Boost" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404":
-          description: BOOST_NOT_FOUND; también si el boost es de otro usuario
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-    delete:
-      summary: Retira un boost activo propio, sin devolver los puntos
-      description: Se puede retirar aunque ya no seas miembro del servidor.
-      security: [{ bearer: [] }]
-      responses:
-        "200":
-          description: Boost en removed
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Boost" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404":
-          description: BOOST_NOT_FOUND
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-        "409":
-          description: BOOST_NOT_ACTIVE
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Error" }
-
-  /webhooks/mercadopago:
-    post:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
       summary: Notificaciones de Mercado Pago
-      description: |
-        Pública (sin JWT). Valida x-signature con MP_WEBHOOK_SECRET y una
-        tolerancia de 5 minutos. Tópicos: order, subscription_preapproval,
-        subscription_authorized_payment, payment, topic_chargebacks_wh.
-        Cada aviso vuelve a consultar el recurso en MP, así que repetirlo no
-        cambia nada.
-      parameters:
-        - { in: query, name: type, schema: { type: string } }
-        - { in: query, name: data.id, schema: { type: string } }
-        - { in: header, name: x-signature, required: true, schema: { type: string } }
-        - { in: header, name: x-request-id, schema: { type: string } }
-      responses:
-        "200": { description: "Procesado o ignorado (tópico desconocido, recurso ajeno o inconsistente)" }
-        "401": { description: INVALID_SIGNATURE }
-        "500": { description: Falló el procesamiento; MP reintenta }
-
+      tags:
+        - Webhooks
+servers:
+  - url: http://localhost:8080
 components:
   securitySchemes:
-    bearer:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-  parameters:
-    IdempotencyKey:
+    BearerAuth:
+      description: Escribir "Bearer " seguido del JWT.
       in: header
-      name: Idempotency-Key
-      required: false
-      description: |
-        Clave única por intento de compra, por ejemplo un UUID generado al abrir la pantalla.
-        Repetir el pedido con la misma clave devuelve el mismo checkout en vez de crear otro.
-        Se recuerda durante 24 horas; si el checkout falla, se puede reintentar con la misma clave.
-      schema: { type: string, maxLength: 255 }
-  responses:
-    CheckoutInProgress:
-      description: CHECKOUT_IN_PROGRESS, otro pedido con la misma Idempotency-Key sigue en curso
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/Error" }
-    IdempotencyKeyReused:
-      description: IDEMPOTENCY_KEY_REUSED, la Idempotency-Key ya se usó para otro pedido
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/Error" }
-    BadRequest:
-      description: INVALID_REQUEST, UNKNOWN_PACKAGE o PAYER_EMAIL_REQUIRED
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/Error" }
-    Unauthorized:
-      description: UNAUTHORIZED
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/Error" }
-    InternalError:
-      description: INTERNAL_ERROR
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/Error" }
+      name: Authorization
+      type: apiKey
   schemas:
-    Error:
+    ApiError:
+      properties:
+        code:
+          example: INVALID_REQUEST
+          type: string
+        details:
+          additionalProperties: {}
+          type: object
+        message:
+          example: La solicitud no es válida
+          type: string
+      required:
+        - code
+        - message
       type: object
+    Boost:
+      properties:
+        created_at:
+          format: date-time
+          type: string
+        id:
+          format: uuid
+          type: string
+        points:
+          example: 100
+          type: integer
+        server_id:
+          format: uuid
+          type: string
+        status:
+          description: failed gave the points back; removed did not.
+          enum:
+            - pending
+            - active
+            - failed
+            - removed
+          type: string
+        status_detail:
+          description: >-
+            Why it failed or was removed: server_not_found, server_suspended,
+
+            not_a_member, max_level_reached, cancelled, no_response or
+
+            server_deleted. Empty if it doesn't apply, also when the owner removed it.
+          type: string
+        updated_at:
+          description: When a boost was removed, when it was removed.
+          format: date-time
+          type: string
+      required:
+        - created_at
+        - id
+        - points
+        - server_id
+        - status
+        - status_detail
+        - updated_at
+      type: object
+    BoostPage:
+      properties:
+        active:
+          description: Active boosts that match the filter, not only the ones in this page.
+          example: 7
+          type: integer
+        boosts:
+          items:
+            $ref: "#/components/schemas/Boost"
+          type: array
+        limit:
+          example: 10
+          type: integer
+        offset:
+          example: 0
+          type: integer
+        total:
+          description: Every boost that matches the filter, not only the ones in this page.
+          example: 13
+          type: integer
+      required:
+        - active
+        - boosts
+        - limit
+        - offset
+        - total
+      type: object
+    BoostRequest:
+      properties:
+        server_id:
+          format: uuid
+          type: string
+      required:
+        - server_id
+      type: object
+    BoostedServer:
+      properties:
+        active:
+          example: 7
+          type: integer
+        failed:
+          example: 1
+          type: integer
+        last_boost_at:
+          format: date-time
+          type: string
+        pending:
+          example: 0
+          type: integer
+        removed:
+          example: 2
+          type: integer
+        server_id:
+          format: uuid
+          type: string
+      required:
+        - active
+        - failed
+        - last_boost_at
+        - pending
+        - removed
+        - server_id
+      type: object
+    BoostedServerPage:
+      properties:
+        limit:
+          example: 10
+          type: integer
+        offset:
+          example: 0
+          type: integer
+        servers:
+          items:
+            $ref: "#/components/schemas/BoostedServer"
+          type: array
+        total:
+          example: 14
+          type: integer
+      required:
+        - limit
+        - offset
+        - servers
+        - total
+      type: object
+    Checkout:
+      properties:
+        checkout_url:
+          format: uri
+          type: string
+        purchase_id:
+          format: uuid
+          type: string
+      required:
+        - checkout_url
+      type: object
+    ErrorResponse:
       properties:
         error:
-          type: object
-          properties:
-            code: { type: string }
-            message: { type: string }
-            details:
-              type: object
-              description: Solo en algunos errores, como INSUFFICIENT_POINTS.
-              additionalProperties: true
-    Boost:
+          $ref: "#/components/schemas/ApiError"
+      required:
+        - error
       type: object
-      required: [id, server_id, points, status, status_detail, created_at, updated_at]
+    HealthStatus:
       properties:
-        id: { type: string, format: uuid }
-        server_id: { type: string, format: uuid }
-        points: { type: integer, example: 100 }
         status:
+          enum:
+            - ready
+            - unavailable
           type: string
-          enum: [pending, active, failed, removed]
-          description: failed devolvió los puntos; removed no.
-        status_detail:
-          type: string
-          description: |
-            Por qué falló o se retiró: server_not_found, server_suspended,
-            not_a_member, max_level_reached, cancelled, no_response o
-            server_deleted. Vacío si no aplica (también en un retiro del dueño).
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time, description: "En un boost removed, cuándo se retiró" }
-    BoostedServer:
+      required:
+        - status
       type: object
-      required: [server_id, active, pending, failed, removed, last_boost_at]
+    LedgerEntry:
       properties:
-        server_id: { type: string, format: uuid }
-        active: { type: integer, example: 7 }
-        pending: { type: integer, example: 0 }
-        failed: { type: integer, example: 1 }
-        removed: { type: integer, example: 2 }
-        last_boost_at: { type: string, format: date-time }
+        created_at:
+          format: date-time
+          type: string
+        delta:
+          description: Positive when points are credited, negative when they are taken
+            back or spent.
+          type: integer
+        reason:
+          enum:
+            - purchase
+            - refund
+            - chargeback
+            - boost
+            - boost_refund
+          type: string
+      required:
+        - created_at
+        - delta
+        - reason
+      type: object
     Package:
-      type: object
       properties:
-        id: { type: string, example: points_550 }
-        points: { type: integer, example: 550 }
-        price_cents: { type: integer, example: 500000 }
-        title: { type: string, example: 550 puntos }
-    Purchase:
+        id:
+          example: points_550
+          type: string
+        points:
+          example: 550
+          type: integer
+        price_cents:
+          example: 500000
+          type: integer
+        title:
+          example: 550 puntos
+          type: string
+      required:
+        - id
+        - points
+        - price_cents
+        - title
       type: object
+    PackageList:
       properties:
-        id: { type: string, format: uuid }
-        package_id: { type: string }
-        points: { type: integer }
-        price_cents: { type: integer }
-        status: { type: string, enum: [pending, paid, failed, expired, refunded, charged_back] }
-        status_detail: { type: string }
-        points_unrecovered: { type: integer, description: Puntos ya gastados que no se pudieron descontar al revertir }
-        created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
+        packages:
+          items:
+            $ref: "#/components/schemas/Package"
+          type: array
+      required:
+        - packages
+      type: object
+    Points:
+      properties:
+        balance:
+          type: integer
+        ledger:
+          items:
+            $ref: "#/components/schemas/LedgerEntry"
+          type: array
+        purchases:
+          items:
+            $ref: "#/components/schemas/Purchase"
+          type: array
+      required:
+        - balance
+        - ledger
+        - purchases
+      type: object
+    PointsCheckoutRequest:
+      properties:
+        package_id:
+          example: points_550
+          type: string
+        payer_email:
+          description: "optional: preloads the email in Mercado Pago"
+          format: email
+          type: string
+        return_to:
+          default: web
+          description: With "app", Mercado Pago returns to
+            <CHECKOUT_RETURN_URL>/app-link/billing/return, which opens the
+            mobile app.
+          enum:
+            - web
+            - app
+          type: string
+      required:
+        - package_id
+      type: object
     Premium:
-      type: object
       properties:
-        state: { type: string, enum: [none, processing_first_payment, active, active_canceled, expired] }
-        active: { type: boolean }
-        premium_until: { type: string, format: date-time, nullable: true }
-        renews: { type: boolean }
-        mp_status: { type: string, description: "Estado de la última suscripción en MP, vacío si nunca tuvo" }
+        active:
+          type: boolean
+        mp_status:
+          description: Status of the latest subscription in Mercado Pago; empty if there
+            is none.
+          type: string
+        premium_until:
+          description: Null if the user never paid.
+          format: date-time
+          type: string
+          nullable: true
+        renews:
+          type: boolean
+        state:
+          allOf:
+            - $ref: "#/components/schemas/service.PremiumState"
+          enum:
+            - none
+            - processing_first_payment
+            - active
+            - active_canceled
+            - expired
+      required:
+        - active
+        - mp_status
+        - premium_until
+        - renews
+        - state
+      type: object
+    PremiumCheckout:
+      properties:
+        checkout_url:
+          format: uri
+          type: string
+      required:
+        - checkout_url
+      type: object
+    PremiumCheckoutRequest:
+      properties:
+        payer_email:
+          description: Required in production; in sandbox the test buyer's email replaces
+            it.
+          format: email
+          type: string
+        return_to:
+          default: web
+          description: With "app", Mercado Pago returns to
+            <CHECKOUT_RETURN_URL>/app-link/billing/return, which opens the
+            mobile app.
+          enum:
+            - web
+            - app
+          type: string
+      type: object
+    Purchase:
+      properties:
+        created_at:
+          format: date-time
+          type: string
+        id:
+          format: uuid
+          type: string
+        package_id:
+          example: points_550
+          type: string
+        points:
+          example: 550
+          type: integer
+        points_unrecovered:
+          description: Points already spent that couldn't be taken back on a refund or
+            chargeback.
+          type: integer
+        price_cents:
+          example: 500000
+          type: integer
+        status:
+          enum:
+            - pending
+            - paid
+            - failed
+            - expired
+            - refunded
+            - charged_back
+          type: string
+        status_detail:
+          description: Why the purchase ended as it did; empty if it doesn't apply.
+          type: string
+        updated_at:
+          format: date-time
+          type: string
+      required:
+        - created_at
+        - id
+        - package_id
+        - points
+        - points_unrecovered
+        - price_cents
+        - status
+        - status_detail
+        - updated_at
+      type: object
+    WebhookNotification:
+      properties:
+        action:
+          type: string
+        data:
+          properties:
+            id:
+              type: string
+          required:
+            - id
+          type: object
+        type:
+          type: string
+      required:
+        - action
+        - data
+        - type
+      type: object
+    service.PremiumState:
+      enum:
+        - none
+        - processing_first_payment
+        - active
+        - active_canceled
+        - expired
+      type: string
+      x-enum-varnames:
+        - PremiumStateNone
+        - PremiumStateProcessingFirstPayment
+        - PremiumStateActive
+        - PremiumStateActiveCanceled
+        - PremiumStateExpired

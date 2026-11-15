@@ -212,7 +212,8 @@ paths:
         que responde 202 con el boost en pending. Consultar
         GET /v1/billing/boosts/{id} hasta que deje de estar pending: normalmente
         tarda segundos. Si servers lo rechaza (servidor inexistente o suspendido,
-        o quien boostea no es miembro) queda failed y los puntos vuelven. Si no
+        quien boostea no es miembro, o el servidor ya tiene los 30 boosts del
+        último nivel) queda failed y los puntos vuelven. Si no
         responde en 24 horas, también vuelven. Con Idempotency-Key, un doble clic
         devuelve el mismo boost y cobra una sola vez.
       security: [{ bearer: [] }]
@@ -242,10 +243,16 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/IdempotencyKeyReused" }
     get:
-      summary: Mis boosts, del más nuevo al más viejo
+      summary: Mis boosts, del más nuevo al más viejo, por páginas
+      description: |
+        Todos los estados, también los retirados (removed). Con server_id, solo
+        los de ese servidor. total y active cuentan todos los boosts del filtro,
+        no solo los de la página.
       security: [{ bearer: [] }]
       parameters:
+        - { in: query, name: server_id, schema: { type: string, format: uuid } }
         - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { in: query, name: offset, schema: { type: integer, minimum: 0, default: 0 } }
       responses:
         "200":
           description: OK
@@ -253,11 +260,44 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [boosts]
+                required: [boosts, total, active, limit, offset]
                 properties:
                   boosts:
                     type: array
                     items: { $ref: "#/components/schemas/Boost" }
+                  total: { type: integer, example: 13 }
+                  active: { type: integer, example: 7 }
+                  limit: { type: integer, example: 10 }
+                  offset: { type: integer, example: 0 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/billing/boosts/servers:
+    get:
+      summary: Servidores que boosteé, por páginas
+      description: |
+        Un servidor por fila, el boosteado más recientemente primero, con cuántos
+        de mis boosts hay ahí en cada estado. Entra si tengo algún boost, en
+        cualquier estado. El nombre y el nivel se piden a servers.
+      security: [{ bearer: [] }]
+      parameters:
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { in: query, name: offset, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers, total, limit, offset]
+                properties:
+                  servers:
+                    type: array
+                    items: { $ref: "#/components/schemas/BoostedServer" }
+                  total: { type: integer, example: 14 }
+                  limit: { type: integer, example: 10 }
+                  offset: { type: integer, example: 0 }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
@@ -390,9 +430,20 @@ components:
           type: string
           description: |
             Por qué falló o se retiró: server_not_found, server_suspended,
-            not_a_member, cancelled, no_response o server_deleted. Vacío si no aplica.
+            not_a_member, max_level_reached, cancelled, no_response o
+            server_deleted. Vacío si no aplica (también en un retiro del dueño).
         created_at: { type: string, format: date-time }
-        updated_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time, description: "En un boost removed, cuándo se retiró" }
+    BoostedServer:
+      type: object
+      required: [server_id, active, pending, failed, removed, last_boost_at]
+      properties:
+        server_id: { type: string, format: uuid }
+        active: { type: integer, example: 7 }
+        pending: { type: integer, example: 0 }
+        failed: { type: integer, example: 1 }
+        removed: { type: integer, example: 2 }
+        last_boost_at: { type: string, format: date-time }
     Package:
       type: object
       properties:

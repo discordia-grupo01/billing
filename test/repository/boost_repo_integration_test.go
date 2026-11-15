@@ -117,9 +117,9 @@ func TestBoostCreateWithoutEnoughPointsLeavesNothing(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 	checkBalance(t, pool, user, 30)
-	list, err := repo.ListForUser(context.Background(), user, 10)
-	if err != nil || len(list) != 0 {
-		t.Errorf("list = %+v, err %v", list, err)
+	page, err := repo.ListForUser(context.Background(), user, model.BoostListParams{Limit: 10})
+	if err != nil || len(page.Boosts) != 0 || page.Total != 0 {
+		t.Errorf("page = %+v, err %v", page, err)
 	}
 	if events := boostEvents(t, pool, boosts.RoutingKeyRequested); len(events) != 0 {
 		t.Errorf("events = %+v", events)
@@ -473,12 +473,128 @@ func TestBoostGetAndList(t *testing.T) {
 	if _, err := repo.Get(ctx, uuid.New()); !errors.Is(err, model.ErrNotFound) {
 		t.Errorf("unknown: %v", err)
 	}
-	list, err := repo.ListForUser(ctx, user, 10)
-	if err != nil || len(list) != 2 {
-		t.Errorf("list = %+v, %v", list, err)
+	page, err := repo.ListForUser(ctx, user, model.BoostListParams{Limit: 10})
+	if err != nil || len(page.Boosts) != 2 || page.Total != 2 {
+		t.Errorf("page = %+v, %v", page, err)
 	}
-	if list, err := repo.ListForUser(ctx, uuid.New(), 10); err != nil || len(list) != 0 {
-		t.Errorf("other user = %+v, %v", list, err)
+	if page, err := repo.ListForUser(ctx, uuid.New(), model.BoostListParams{Limit: 10}); err != nil || len(page.Boosts) != 0 {
+		t.Errorf("other user = %+v, %v", page, err)
+	}
+}
+
+// boostsOn creates n boosts of user on server and marks them active.
+func boostsOn(t *testing.T, repo *repository.BoostRepository, user, server uuid.UUID, n int) []model.Boost {
+	t.Helper()
+	ctx := context.Background()
+	out := make([]model.Boost, 0, n)
+	for i := 0; i < n; i++ {
+		b, _, err := repo.Create(ctx, newBoost(user, server), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.MarkApplied(ctx, b.ID); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+func TestBoostListPagesOneServerWithEveryStatus(t *testing.T) {
+	pool := newTestPool(t)
+	repo := repository.NewBoostRepository(pool)
+	ctx := context.Background()
+	user, server, other := uuid.New(), uuid.New(), uuid.New()
+	fund(t, pool, user, 1500)
+	mine := boostsOn(t, repo, user, server, 12)
+	boostsOn(t, repo, user, other, 2)
+	if _, err := repo.Remove(ctx, user, mine[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	failed, _, err := repo.Create(ctx, newBoost(user, server), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Reject(ctx, failed.ID, "max_level_reached"); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := repo.ListForUser(ctx, user, model.BoostListParams{ServerID: &server, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Boosts) != 10 || first.Total != 13 || first.Active != 11 || first.Limit != 10 || first.Offset != 0 {
+		t.Fatalf("first page = %d boosts, total %d, active %d", len(first.Boosts), first.Total, first.Active)
+	}
+	if first.Boosts[0].ID != failed.ID || first.Boosts[0].StatusDetail != "max_level_reached" {
+		t.Errorf("newest = %+v, want the failed one", first.Boosts[0])
+	}
+
+	second, err := repo.ListForUser(ctx, user, model.BoostListParams{ServerID: &server, Limit: 10, Offset: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Boosts) != 3 || second.Total != 13 {
+		t.Fatalf("second page = %d boosts, total %d", len(second.Boosts), second.Total)
+	}
+	last := second.Boosts[len(second.Boosts)-1]
+	if last.ID != mine[0].ID || last.Status != model.BoostStatusRemoved {
+		t.Errorf("oldest = %+v, want the removed one", last)
+	}
+	seen := map[uuid.UUID]bool{}
+	for _, b := range append(first.Boosts, second.Boosts...) {
+		if b.ServerID != server || seen[b.ID] {
+			t.Errorf("boost %s on %s listed twice or from another server", b.ID, b.ServerID)
+		}
+		seen[b.ID] = true
+	}
+
+	all, err := repo.ListForUser(ctx, user, model.BoostListParams{Limit: 100})
+	if err != nil || all.Total != 15 || all.Active != 13 {
+		t.Errorf("every server = total %d, active %d, %v", all.Total, all.Active, err)
+	}
+}
+
+func TestBoostListServers(t *testing.T) {
+	pool := newTestPool(t)
+	repo := repository.NewBoostRepository(pool)
+	ctx := context.Background()
+	user := uuid.New()
+	fund(t, pool, user, 1500)
+	older, newer := uuid.New(), uuid.New()
+	olderBoosts := boostsOn(t, repo, user, older, 3)
+	if _, err := repo.Remove(ctx, user, olderBoosts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	boostsOn(t, repo, user, newer, 1)
+	if _, _, err := repo.Create(ctx, newBoost(user, newer), ""); err != nil {
+		t.Fatal(err)
+	}
+	stranger := uuid.New()
+	fund(t, pool, stranger, 100)
+	boostsOn(t, repo, stranger, older, 1)
+
+	page, err := repo.ListServersForUser(ctx, user, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || len(page.Servers) != 2 {
+		t.Fatalf("page = %+v", page)
+	}
+	first, second := page.Servers[0], page.Servers[1]
+	if first.ServerID != newer || first.Active != 1 || first.Pending != 1 || first.LastBoostAt.IsZero() {
+		t.Errorf("first = %+v, want the most recently boosted", first)
+	}
+	if second.ServerID != older || second.Active != 2 || second.Removed != 1 {
+		t.Errorf("second = %+v", second)
+	}
+
+	rest, err := repo.ListServersForUser(ctx, user, 1, 1)
+	if err != nil || rest.Total != 2 || len(rest.Servers) != 1 || rest.Servers[0].ServerID != older {
+		t.Errorf("second page = %+v, %v", rest, err)
+	}
+	if none, err := repo.ListServersForUser(ctx, uuid.New(), 10, 0); err != nil || none.Total != 0 || len(none.Servers) != 0 {
+		t.Errorf("other user = %+v, %v", none, err)
 	}
 }
 

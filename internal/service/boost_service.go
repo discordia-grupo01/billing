@@ -36,7 +36,8 @@ func ServersEventsRoutingKeys() []string {
 type BoostStore interface {
 	Create(ctx context.Context, b model.Boost, idempotencyKey string) (model.Boost, bool, error)
 	Get(ctx context.Context, id uuid.UUID) (model.Boost, error)
-	ListForUser(ctx context.Context, userID uuid.UUID, limit int) ([]model.Boost, error)
+	ListForUser(ctx context.Context, userID uuid.UUID, params model.BoostListParams) (model.BoostPage, error)
+	ListServersForUser(ctx context.Context, userID uuid.UUID, limit, offset int) (model.BoostedServerPage, error)
 	MarkApplied(ctx context.Context, id uuid.UUID) (bool, error)
 	Reject(ctx context.Context, id uuid.UUID, detail string) (bool, error)
 	Remove(ctx context.Context, userID, id uuid.UUID) (model.Boost, error)
@@ -91,11 +92,23 @@ func (s *BoostService) Get(ctx context.Context, userID, id uuid.UUID) (model.Boo
 	return boost, nil
 }
 
-func (s *BoostService) List(ctx context.Context, userID uuid.UUID, limit int) ([]model.Boost, error) {
+// List pages the user's boosts, optionally of one server.
+func (s *BoostService) List(ctx context.Context, userID uuid.UUID, params model.BoostListParams) (model.BoostPage, error) {
+	params.Limit, params.Offset = clampPage(params.Limit, params.Offset)
+	return s.store.ListForUser(ctx, userID, params)
+}
+
+// ListServers pages the servers the user boosted.
+func (s *BoostService) ListServers(ctx context.Context, userID uuid.UUID, limit, offset int) (model.BoostedServerPage, error) {
+	limit, offset = clampPage(limit, offset)
+	return s.store.ListServersForUser(ctx, userID, limit, offset)
+}
+
+func clampPage(limit, offset int) (int, int) {
 	if limit <= 0 {
 		limit = defaultBoostLimit
 	}
-	return s.store.ListForUser(ctx, userID, min(limit, maxBoostLimit))
+	return min(limit, maxBoostLimit), max(offset, 0)
 }
 
 func (s *BoostService) Remove(ctx context.Context, userID, id uuid.UUID) (model.Boost, error) {

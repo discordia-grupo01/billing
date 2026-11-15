@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,13 +20,16 @@ import (
 
 type fakeBoosts struct {
 	boost     model.Boost
-	list      []model.Boost
+	page      model.BoostPage
+	servers   model.BoostedServerPage
 	err       error
 	gotUser   uuid.UUID
 	gotServer uuid.UUID
 	gotKey    string
 	gotID     uuid.UUID
+	gotParams model.BoostListParams
 	gotLimit  int
+	gotOffset int
 	calls     int
 }
 
@@ -39,10 +43,15 @@ func (f *fakeBoosts) Get(_ context.Context, user, id uuid.UUID) (model.Boost, er
 	f.gotUser, f.gotID = user, id
 	return f.boost, f.err
 }
-func (f *fakeBoosts) List(_ context.Context, user uuid.UUID, limit int) ([]model.Boost, error) {
+func (f *fakeBoosts) List(_ context.Context, user uuid.UUID, params model.BoostListParams) (model.BoostPage, error) {
 	f.calls++
-	f.gotUser, f.gotLimit = user, limit
-	return f.list, f.err
+	f.gotUser, f.gotParams = user, params
+	return f.page, f.err
+}
+func (f *fakeBoosts) ListServers(_ context.Context, user uuid.UUID, limit, offset int) (model.BoostedServerPage, error) {
+	f.calls++
+	f.gotUser, f.gotLimit, f.gotOffset = user, limit, offset
+	return f.servers, f.err
 }
 func (f *fakeBoosts) Remove(_ context.Context, user, id uuid.UUID) (model.Boost, error) {
 	f.calls++
@@ -147,36 +156,87 @@ func TestBoostRequestKeyReused(t *testing.T) {
 }
 
 func TestBoostList(t *testing.T) {
-	f := &fakeBoosts{list: []model.Boost{{ID: uuid.New(), Status: model.BoostStatusActive}}}
+	serverID := uuid.New()
+	f := &fakeBoosts{page: model.BoostPage{
+		Boosts: []model.Boost{{ID: uuid.New(), Status: model.BoostStatusRemoved}},
+		Total:  13, Active: 7, Limit: 10, Offset: 10,
+	}}
 
-	w := boostDo(boostRouter(f), http.MethodGet, "/v1/billing/boosts?limit=5", "", nil)
+	w := boostDo(boostRouter(f), http.MethodGet, "/v1/billing/boosts?limit=10&offset=10&server_id="+serverID.String(), "", nil)
 
-	if w.Code != http.StatusOK || f.gotLimit != 5 {
-		t.Fatalf("status = %d, limit = %d", w.Code, f.gotLimit)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
 	}
-	var body struct {
-		Boosts []boostResponse `json:"boosts"`
+	got := f.gotParams
+	if got.Limit != 10 || got.Offset != 10 || got.ServerID == nil || *got.ServerID != serverID || f.gotUser != userID {
+		t.Errorf("params = %+v", got)
 	}
+	var body boostPageResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Boosts) != 1 || body.Boosts[0].Status != "active" {
+	if len(body.Boosts) != 1 || body.Boosts[0].Status != "removed" || body.Total != 13 || body.Active != 7 ||
+		body.Limit != 10 || body.Offset != 10 {
 		t.Errorf("got %+v", body)
 	}
 }
 
-func TestBoostListEmptyIsAnArray(t *testing.T) {
-	w := boostDo(boostRouter(&fakeBoosts{}), http.MethodGet, "/v1/billing/boosts", "", nil)
+func TestBoostListWithoutFilters(t *testing.T) {
+	f := &fakeBoosts{}
+	w := boostDo(boostRouter(f), http.MethodGet, "/v1/billing/boosts", "", nil)
+	if w.Code != http.StatusOK || f.gotParams != (model.BoostListParams{}) {
+		t.Errorf("status = %d, params = %+v", w.Code, f.gotParams)
+	}
 	if !strings.Contains(w.Body.String(), `"boosts":[]`) {
 		t.Errorf("body = %s", w.Body)
 	}
 }
 
-func TestBoostListBadLimitAndFailure(t *testing.T) {
-	if w := boostDo(boostRouter(&fakeBoosts{}), http.MethodGet, "/v1/billing/boosts?limit=0", "", nil); w.Code != http.StatusBadRequest {
-		t.Errorf("bad limit = %d", w.Code)
+func TestBoostListBadQueryAndFailure(t *testing.T) {
+	for _, query := range []string{"limit=0", "offset=-1", "offset=x", "server_id=nope"} {
+		f := &fakeBoosts{}
+		if w := boostDo(boostRouter(f), http.MethodGet, "/v1/billing/boosts?"+query, "", nil); w.Code != http.StatusBadRequest || f.calls != 0 {
+			t.Errorf("%s: status = %d, calls = %d", query, w.Code, f.calls)
+		}
 	}
 	if w := boostDo(boostRouter(&fakeBoosts{err: errBoom}), http.MethodGet, "/v1/billing/boosts", "", nil); w.Code != http.StatusInternalServerError {
+		t.Errorf("failure = %d", w.Code)
+	}
+}
+
+func TestBoostListServers(t *testing.T) {
+	serverID := uuid.New()
+	last := time.Date(2026, 11, 14, 18, 0, 0, 0, time.UTC)
+	f := &fakeBoosts{servers: model.BoostedServerPage{
+		Servers: []model.BoostedServer{{ServerID: serverID, Active: 7, Failed: 1, Removed: 2, LastBoostAt: last}},
+		Total:   14, Limit: 10, Offset: 0,
+	}}
+
+	w := boostDo(boostRouter(f), http.MethodGet, "/v1/billing/boosts/servers?limit=10", "", nil)
+
+	if w.Code != http.StatusOK || f.gotLimit != 10 || f.gotOffset != 0 || f.gotUser != userID {
+		t.Fatalf("status = %d, limit = %d, offset = %d", w.Code, f.gotLimit, f.gotOffset)
+	}
+	var body boostedServerPageResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	want := boostedServerResponse{ServerID: serverID, Active: 7, Failed: 1, Removed: 2, LastBoostAt: last}
+	if len(body.Servers) != 1 || body.Servers[0] != want || body.Total != 14 || body.Limit != 10 {
+		t.Errorf("got %+v", body)
+	}
+}
+
+func TestBoostListServersEmptyBadQueryAndFailure(t *testing.T) {
+	if w := boostDo(boostRouter(&fakeBoosts{}), http.MethodGet, "/v1/billing/boosts/servers", "", nil); !strings.Contains(w.Body.String(), `"servers":[]`) {
+		t.Errorf("empty body = %s", w.Body)
+	}
+	for _, query := range []string{"limit=0", "offset=-1"} {
+		if w := boostDo(boostRouter(&fakeBoosts{}), http.MethodGet, "/v1/billing/boosts/servers?"+query, "", nil); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d", query, w.Code)
+		}
+	}
+	if w := boostDo(boostRouter(&fakeBoosts{err: errBoom}), http.MethodGet, "/v1/billing/boosts/servers", "", nil); w.Code != http.StatusInternalServerError {
 		t.Errorf("failure = %d", w.Code)
 	}
 }

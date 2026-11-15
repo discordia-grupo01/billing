@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,7 +19,8 @@ import (
 type BoostUseCases interface {
 	Request(ctx context.Context, userID, serverID uuid.UUID, idempotencyKey string) (model.Boost, error)
 	Get(ctx context.Context, userID, id uuid.UUID) (model.Boost, error)
-	List(ctx context.Context, userID uuid.UUID, limit int) ([]model.Boost, error)
+	List(ctx context.Context, userID uuid.UUID, params model.BoostListParams) (model.BoostPage, error)
+	ListServers(ctx context.Context, userID uuid.UUID, limit, offset int) (model.BoostedServerPage, error)
 	Remove(ctx context.Context, userID, id uuid.UUID) (model.Boost, error)
 }
 
@@ -38,6 +40,7 @@ func (h *BoostHandler) Register(r gin.IRouter, auth gin.HandlerFunc) {
 	g := r.Group("/v1/billing/boosts", auth)
 	g.POST("", h.request)
 	g.GET("", h.list)
+	g.GET("/servers", h.listServers)
 	g.GET("/:id", h.get)
 	g.DELETE("/:id", h.remove)
 }
@@ -54,6 +57,30 @@ type boostResponse struct {
 	StatusDetail string    `json:"status_detail"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type boostPageResponse struct {
+	Boosts []boostResponse `json:"boosts"`
+	Total  int             `json:"total"`
+	Active int             `json:"active"`
+	Limit  int             `json:"limit"`
+	Offset int             `json:"offset"`
+}
+
+type boostedServerResponse struct {
+	ServerID    uuid.UUID `json:"server_id"`
+	Active      int       `json:"active"`
+	Pending     int       `json:"pending"`
+	Failed      int       `json:"failed"`
+	Removed     int       `json:"removed"`
+	LastBoostAt time.Time `json:"last_boost_at"`
+}
+
+type boostedServerPageResponse struct {
+	Servers []boostedServerResponse `json:"servers"`
+	Total   int                     `json:"total"`
+	Limit   int                     `json:"limit"`
+	Offset  int                     `json:"offset"`
 }
 
 func toBoostResponse(b model.Boost) boostResponse {
@@ -83,21 +110,88 @@ func (h *BoostHandler) request(c *gin.Context) {
 	c.JSON(http.StatusAccepted, toBoostResponse(boost))
 }
 
+// list pages the user's boosts; ?server_id= keeps one server's.
 func (h *BoostHandler) list(c *gin.Context) {
-	limit, ok := parseLimit(c)
+	params, ok := parseBoostListParams(c)
 	if !ok {
 		return
 	}
-	list, err := h.boosts.List(c.Request.Context(), middleware.UserID(c), limit)
+	page, err := h.boosts.List(c.Request.Context(), middleware.UserID(c), params)
 	if err != nil {
 		writeServiceError(c, h.log, err)
 		return
 	}
-	out := make([]boostResponse, 0, len(list))
-	for _, b := range list {
-		out = append(out, toBoostResponse(b))
+	out := boostPageResponse{
+		Boosts: make([]boostResponse, 0, len(page.Boosts)),
+		Total:  page.Total, Active: page.Active, Limit: page.Limit, Offset: page.Offset,
 	}
-	c.JSON(http.StatusOK, gin.H{"boosts": out})
+	for _, b := range page.Boosts {
+		out.Boosts = append(out.Boosts, toBoostResponse(b))
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// listServers pages the servers the user boosted, with their boosts by status.
+func (h *BoostHandler) listServers(c *gin.Context) {
+	limit, ok := parseLimit(c)
+	if !ok {
+		return
+	}
+	offset, ok := parseOffset(c)
+	if !ok {
+		return
+	}
+	page, err := h.boosts.ListServers(c.Request.Context(), middleware.UserID(c), limit, offset)
+	if err != nil {
+		writeServiceError(c, h.log, err)
+		return
+	}
+	out := boostedServerPageResponse{
+		Servers: make([]boostedServerResponse, 0, len(page.Servers)),
+		Total:   page.Total, Limit: page.Limit, Offset: page.Offset,
+	}
+	for _, s := range page.Servers {
+		out.Servers = append(out.Servers, boostedServerResponse{
+			ServerID: s.ServerID, Active: s.Active, Pending: s.Pending,
+			Failed: s.Failed, Removed: s.Removed, LastBoostAt: s.LastBoostAt,
+		})
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func parseBoostListParams(c *gin.Context) (model.BoostListParams, bool) {
+	limit, ok := parseLimit(c)
+	if !ok {
+		return model.BoostListParams{}, false
+	}
+	offset, ok := parseOffset(c)
+	if !ok {
+		return model.BoostListParams{}, false
+	}
+	params := model.BoostListParams{Limit: limit, Offset: offset}
+	if raw := c.Query("server_id"); raw != "" {
+		serverID, err := uuid.Parse(raw)
+		if err != nil {
+			writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
+			return model.BoostListParams{}, false
+		}
+		params.ServerID = &serverID
+	}
+	return params, true
+}
+
+// parseOffset reads ?offset; absent is 0.
+func parseOffset(c *gin.Context) (int, bool) {
+	raw := c.Query("offset")
+	if raw == "" {
+		return 0, true
+	}
+	offset, err := strconv.Atoi(raw)
+	if err != nil || offset < 0 {
+		writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
+		return 0, false
+	}
+	return offset, true
 }
 
 func (h *BoostHandler) get(c *gin.Context) {

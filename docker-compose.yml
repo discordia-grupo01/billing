@@ -52,7 +52,7 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-discordia} -d ${DATABASE_NAME:-discordia_servicio}"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${DATABASE_USER:-discordia} -d ${DATABASE_NAME:-discordia_servicio}"]
       interval: 5s
       timeout: 5s
       retries: 5

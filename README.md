@@ -10,6 +10,7 @@ Servicio de pagos de Discordia.
 - [Variables de entorno](#variables-de-entorno)
 - [Comandos Docker](#comandos-docker)
 - [Tests](#tests)
+- [Contrato de la API y tests de contrato](#contrato-de-la-api-y-tests-de-contrato)
 - [Más documentación](#más-documentación)
 
 ## Introducción
@@ -163,6 +164,33 @@ El repositorio se formatea con gofmt. Activá el hook una vez por clon:
 ```bash
 git config core.hooksPath .githooks
 ```
+
+## Contrato de la API y tests de contrato
+
+`openapi.yaml` se genera desde las anotaciones `swag` del código (`internal/handler` y `cmd/api/main.go`); no se edita a mano. Para regenerarlo y validarlo:
+
+```bash
+make openapi
+```
+
+El CI lo regenera en cada push y commitea el cambio si hubo alguno.
+
+[Schemathesis](https://schemathesis.readthedocs.io/) (versión fija 4.33.4) prueba que el servicio real cumpla ese contrato: sin 5xx, con respuestas y cuerpos declarados. Hace falta Docker, Python 3 y Go; el script crea su propio entorno virtual en `.contract-venv/`:
+
+```bash
+make contract-deps-up   # Postgres (55503) y RabbitMQ (55513) descartables, y las migraciones
+make contract-test      # levanta el servicio, siembra datos de prueba, corre Schemathesis y lo apaga
+make contract-deps-down
+```
+
+Reglas de seguridad: el script se niega a correr si la base o RabbitMQ no son locales, usa secretos de juguete y no llega nunca a Mercado Pago (el servicio arranca con un proxy muerto y un token de prueba). El job `contract` del CI hace lo mismo con los servicios del job y no usa `secrets.*`.
+
+Qué no cubre, y por qué:
+
+- `POST /v1/billing/points/checkout` y `POST /v1/billing/premium/checkout` quedan excluidas: con datos válidos crean la orden o la suscripción en Mercado Pago, y su SDK oficial no permite cambiar la URL base.
+- `POST /v1/billing/premium/cancel` solo ve el 409 (sin suscripción): el 200 exige una suscripción viva y llamar a Mercado Pago.
+- Checks desactivados, con su motivo en `scripts/contract-test.sh`: `negative_data_rejection` (`server_id=` vacío y `refresh` aceptan cualquier valor), `positive_data_acceptance` (reglas que el contrato no expresa, como una `Idempotency-Key` ya usada) y `unsupported_method` (Gin responde 404 y no 405).
+- Las herramientas de desarrollo `/dev/billing/simulate-*` no forman parte del contrato.
 
 ## Más documentación
 

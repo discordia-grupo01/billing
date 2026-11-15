@@ -2,8 +2,41 @@ services:
   api:
     build: .
     ports:
-      - "8080:8080"
-    env_file: .env
+      - "${API_PORT:-8080}:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ENVIRONMENT: development
+      HOST: 0.0.0.0
+      PORT: 8080
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${DATABASE_NAME:-discordia_servicio}
+      DATABASE_USER: ${DATABASE_USER:-discordia}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-discordia}
+      DATABASE_SSLMODE: disable
+      JWT_SECRET: ${JWT_SECRET:-secreto-jwt-solo-local}
+      RABBITMQ_URL: ${RABBITMQ_URL_DOCKER:-amqp://guest:guest@host.docker.internal:5672/}
+      BILLING_EVENTS_HMAC_SECRET: ${BILLING_EVENTS_HMAC_SECRET:-secreto-billing-solo-local}
+      MP_ACCESS_TOKEN: ${MP_ACCESS_TOKEN:-TEST-reemplazar-por-el-token-de-sandbox}
+      MP_WEBHOOK_SECRET: ${MP_WEBHOOK_SECRET:-secreto-webhook-solo-local}
+      CHECKOUT_RETURN_URL: ${CHECKOUT_RETURN_URL:-http://localhost:3000/premium}
+      BILLING_DEV_TOOLS: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  migrate:
+    image: migrate/migrate
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://${DATABASE_USER:-discordia}:${DATABASE_PASSWORD:-discordia}@db:5432/${DATABASE_NAME:-discordia_servicio}?sslmode=disable"
+      - "up"
+    volumes:
+      - ./migrations:/migrations:ro
     depends_on:
       db:
         condition: service_healthy
@@ -11,15 +44,15 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: discordia_servicio
-      POSTGRES_USER: discordia
-      POSTGRES_PASSWORD: discordia
+      POSTGRES_DB: ${DATABASE_NAME:-discordia_servicio}
+      POSTGRES_USER: ${DATABASE_USER:-discordia}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-discordia}
     ports:
-      - "5432:5432"
+      - "${DATABASE_PORT:-5432}:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U discordia"]
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-discordia} -d ${DATABASE_NAME:-discordia_servicio}"]
       interval: 5s
       timeout: 5s
       retries: 5

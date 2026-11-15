@@ -216,7 +216,7 @@ type pointsResponse struct {
 // @Tags         Points
 // @Produce      json
 // @Security     BearerAuth
-// @Param        limit  query  int  false  "Cuántos movimientos y cuántas compras devolver; aplica a las dos listas"  minimum(1)  maximum(100)  default(20)
+// @Param        limit  query  int  false  "Cuántos movimientos y cuántas compras devolver; aplica a las dos listas. Un valor mayor que 100 se trata como 100."  minimum(1)  default(20)
 // @Success      200  {object}  pointsResponse  "Saldo y listas"
 // @Failure      400  {object}  errorBody  "INVALID_REQUEST"
 // @Failure      401  {object}  errorBody  "UNAUTHORIZED"
@@ -330,7 +330,7 @@ func toPremiumResponse(v service.PremiumView) premiumResponse {
 // @Tags         Premium
 // @Produce      json
 // @Security     BearerAuth
-// @Param        refresh  query  string  false  "Con `1` o `true`, consulta a Mercado Pago antes de responder (usar al volver del checkout)"  Enums(1, true)
+// @Param        refresh  query  string  false  "Con `1` o `true`, consulta a Mercado Pago antes de responder (usar al volver del checkout); cualquier otro valor se ignora"
 // @Success      200  {object}  premiumResponse  "Estado de Premium"
 // @Failure      401  {object}  errorBody  "UNAUTHORIZED"
 // @Failure      500  {object}  errorBody  "INTERNAL_ERROR"

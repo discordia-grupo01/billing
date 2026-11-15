@@ -140,8 +140,8 @@ func (h *BoostHandler) request(c *gin.Context) {
 // @Tags         Boosts
 // @Produce      json
 // @Security     BearerAuth
-// @Param        server_id  query  string  false  "Solo los boosts de este servidor"  format(uuid)
-// @Param        limit      query  int     false  "Tamaño de la página"  minimum(1)  maximum(100)  default(50)
+// @Param        server_id  query  string  false  "Solo los boosts de este servidor; vacío equivale a no enviarlo"  format(uuid)
+// @Param        limit      query  int     false  "Tamaño de la página. Un valor mayor que 100 se trata como 100."  minimum(1)  default(50)
 // @Param        offset     query  int     false  "Cuántos boosts saltear"  minimum(0)  default(0)
 // @Success      200  {object}  boostPageResponse  "Página de boosts"
 // @Failure      400  {object}  errorBody  "INVALID_REQUEST"
@@ -175,7 +175,7 @@ func (h *BoostHandler) list(c *gin.Context) {
 // @Tags         Boosts
 // @Produce      json
 // @Security     BearerAuth
-// @Param        limit   query  int  false  "Tamaño de la página"  minimum(1)  maximum(100)  default(50)
+// @Param        limit   query  int  false  "Tamaño de la página. Un valor mayor que 100 se trata como 100."  minimum(1)  default(50)
 // @Param        offset  query  int  false  "Cuántos servidores saltear"  minimum(0)  default(0)
 // @Success      200  {object}  boostedServerPageResponse  "Página de servidores"
 // @Failure      400  {object}  errorBody  "INVALID_REQUEST"

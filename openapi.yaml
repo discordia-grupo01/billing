@@ -53,19 +53,18 @@ paths:
         `server_id`, solo los de ese servidor. `total` y `active` cuentan todos
         los boosts del filtro, no solo los de la página.
       parameters:
-        - description: Solo los boosts de este servidor
+        - description: Solo los boosts de este servidor; vacío equivale a no enviarlo
           in: query
           name: server_id
           schema:
             type: string
             format: uuid
-        - description: Tamaño de la página
+        - description: Tamaño de la página. Un valor mayor que 100 se trata como 100.
           in: query
           name: limit
           schema:
             type: integer
             minimum: 1
-            maximum: 100
             default: 50
         - description: Cuántos boosts saltear
           in: query
@@ -266,13 +265,12 @@ paths:
         cuántos de mis boosts hay ahí en cada estado. Entra si tengo algún
         boost, en cualquier estado.
       parameters:
-        - description: Tamaño de la página
+        - description: Tamaño de la página. Un valor mayor que 100 se trata como 100.
           in: query
           name: limit
           schema:
             type: integer
             minimum: 1
-            maximum: 100
             default: 50
         - description: Cuántos servidores saltear
           in: query
@@ -315,13 +313,12 @@ paths:
     get:
       parameters:
         - description: Cuántos movimientos y cuántas compras devolver; aplica a las dos
-            listas
+            listas. Un valor mayor que 100 se trata como 100.
           in: query
           name: limit
           schema:
             type: integer
             minimum: 1
-            maximum: 100
             default: 20
       responses:
         "200":
@@ -443,14 +440,11 @@ paths:
     get:
       parameters:
         - description: Con `1` o `true`, consulta a Mercado Pago antes de responder (usar
-            al volver del checkout)
+            al volver del checkout); cualquier otro valor se ignora
           in: query
           name: refresh
           schema:
             type: string
-            enum:
-              - "1"
-              - "true"
       responses:
         "200":
           description: Estado de Premium

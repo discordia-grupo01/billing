@@ -11,6 +11,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # contents: write para que el paso que regenera openapi.yaml pueda commitearlo.
+    permissions:
+      contents: write
     services:
       postgres:
         image: postgres:16-alpine
@@ -34,6 +37,8 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -48,8 +53,13 @@ jobs:
 
       - run: go build ./...
       - run: go vet ./...
-      - name: Validar openapi.yaml
+      - name: Regenerar y validar openapi.yaml
         run: make openapi
+      - name: Commitear openapi.yaml si cambió
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "docs(openapi): regenerate openapi.yaml [skip ci]"
+          file_pattern: openapi.yaml
       - name: Tests
         # -coverpkg mide la cobertura de todo internal/, no solo la del paquete
         # que tiene el test (mismo criterio que servers e identify-service).
@@ -66,6 +76,58 @@ jobs:
             echo "::error::Cobertura ${COVERAGE}% por debajo del minimo requerido (70%)"
             exit 1
           fi
+
+  # Valida con Schemathesis que el servicio cumpla openapi.yaml. Corre en paralelo
+  # a `test`, contra un Postgres y un RabbitMQ del propio job, sin secrets y sin
+  # llegar nunca a Mercado Pago.
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: discordia_billing_contract
+          POSTGRES_USER: discordia
+          POSTGRES_PASSWORD: discordia
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U discordia"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      rabbitmq:
+        image: rabbitmq:3-alpine
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CONTRACT_DB_PORT: 5432
+      CONTRACT_MQ_PORT: 5672
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Migrar la base
+        run: go run -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@v4.17.1 -path migrations -database "postgres://discordia:discordia@localhost:5432/discordia_billing_contract?sslmode=disable" up
+      - name: Tests de contrato (Schemathesis)
+        run: make contract-test
+      - name: Reporte de Schemathesis
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: schemathesis-report
+          path: schemathesis-report/
+          if-no-files-found: ignore
 
   # Solo en main: publica la imagen del commit, migra la base de produccion y
   # despliega en la VM de billing (ver README, seccion Deploy).

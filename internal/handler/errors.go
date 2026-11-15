@@ -46,15 +46,18 @@ const (
 	insufficientPointsFormat = "Te faltan %d puntos para boostear este servidor"
 )
 
+// errorBody is the envelope of every error response.
 type errorBody struct {
 	Error apiError `json:"error"`
-}
+} // @name ErrorResponse
 
+// apiError is the error itself. Details only comes with some errors, such as
+// INSUFFICIENT_POINTS.
 type apiError struct {
-	Code    string         `json:"code"`
-	Message string         `json:"message"`
-	Details map[string]any `json:"details,omitempty"`
-}
+	Code    string         `json:"code" example:"INVALID_REQUEST"`
+	Message string         `json:"message" example:"La solicitud no es válida"`
+	Details map[string]any `json:"details,omitempty" validate:"optional"`
+} // @name ApiError
 
 func writeError(c *gin.Context, status int, code, message string) {
 	c.AbortWithStatusJSON(status, errorBody{Error: apiError{Code: code, Message: message}})

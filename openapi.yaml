@@ -867,12 +867,12 @@ components:
             - boost_refund
           type: string
         server_id:
+          format: uuid
           type: string
       required:
         - created_at
         - delta
         - reason
-        - server_id
       type: object
     Package:
       properties:

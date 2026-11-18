@@ -200,7 +200,7 @@ type ledgerEntryResponse struct {
 	// Positive when points are credited, negative when they are taken back or spent.
 	Delta     int64     `json:"delta"`
 	Reason    string    `json:"reason" enums:"purchase,refund,chargeback,boost,boost_refund"`
-	ServerID  *string   `json:"server_id,omitempty"`
+	ServerID  *string   `json:"server_id,omitempty" format:"uuid" validate:"optional"`
 	CreatedAt time.Time `json:"created_at" format:"date-time"`
 } // @name LedgerEntry
 

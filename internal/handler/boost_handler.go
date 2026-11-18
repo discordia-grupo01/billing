@@ -109,16 +109,16 @@ func toBoostResponse(b model.Boost) boostResponse {
 // @Param        Idempotency-Key  header  string        false  "Clave única por intento, por ejemplo un UUID generado al abrir la pantalla. Repetir el pedido con la misma clave devuelve el mismo boost en vez de crear otro; se recuerda durante 24 horas."  maxlength(255)
 // @Param        body             body    boostRequest  true   "Servidor a boostear"
 // @Success      202  {object}  boostResponse  "Boost en pending, con los puntos ya descontados"
-// @Failure      400  {object}  errorBody  "INVALID_REQUEST"
-// @Failure      401  {object}  errorBody  "UNAUTHORIZED"
-// @Failure      409  {object}  errorBody  "INSUFFICIENT_POINTS, con balance, cost y missing en details"
-// @Failure      422  {object}  errorBody  "IDEMPOTENCY_KEY_REUSED, la Idempotency-Key ya se usó para otro servidor"
-// @Failure      500  {object}  errorBody  "INTERNAL_ERROR"
+// @Failure      400  {object}  apierr.ErrorResponse  "INVALID_BODY"
+// @Failure      401  {object}  apierr.ErrorResponse  "UNAUTHORIZED"
+// @Failure      409  {object}  apierr.ErrorResponse  "INSUFFICIENT_POINTS, con balance, cost y missing en details"
+// @Failure      422  {object}  apierr.ErrorResponse  "IDEMPOTENCY_KEY_REUSED, la Idempotency-Key ya se usó para otro servidor"
+// @Failure      500  {object}  apierr.ErrorResponse  "INTERNAL_ERROR"
 // @Router       /v1/billing/boosts [post]
 func (h *BoostHandler) request(c *gin.Context) {
 	var req boostRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
+		invalidBody(c)
 		return
 	}
 	key, ok := idempotencyKey(c)
@@ -144,9 +144,9 @@ func (h *BoostHandler) request(c *gin.Context) {
 // @Param        limit      query  int     false  "Tamaño de la página. Un valor mayor que 100 se trata como 100."  minimum(1)  default(50)
 // @Param        offset     query  int     false  "Cuántos boosts saltear"  minimum(0)  default(0)
 // @Success      200  {object}  boostPageResponse  "Página de boosts"
-// @Failure      400  {object}  errorBody  "INVALID_REQUEST"
-// @Failure      401  {object}  errorBody  "UNAUTHORIZED"
-// @Failure      500  {object}  errorBody  "INTERNAL_ERROR"
+// @Failure      400  {object}  apierr.ErrorResponse  "INVALID_QUERY"
+// @Failure      401  {object}  apierr.ErrorResponse  "UNAUTHORIZED"
+// @Failure      500  {object}  apierr.ErrorResponse  "INTERNAL_ERROR"
 // @Router       /v1/billing/boosts [get]
 func (h *BoostHandler) list(c *gin.Context) {
 	params, ok := parseBoostListParams(c)
@@ -178,9 +178,9 @@ func (h *BoostHandler) list(c *gin.Context) {
 // @Param        limit   query  int  false  "Tamaño de la página. Un valor mayor que 100 se trata como 100."  minimum(1)  default(50)
 // @Param        offset  query  int  false  "Cuántos servidores saltear"  minimum(0)  default(0)
 // @Success      200  {object}  boostedServerPageResponse  "Página de servidores"
-// @Failure      400  {object}  errorBody  "INVALID_REQUEST"
-// @Failure      401  {object}  errorBody  "UNAUTHORIZED"
-// @Failure      500  {object}  errorBody  "INTERNAL_ERROR"
+// @Failure      400  {object}  apierr.ErrorResponse  "INVALID_QUERY"
+// @Failure      401  {object}  apierr.ErrorResponse  "UNAUTHORIZED"
+// @Failure      500  {object}  apierr.ErrorResponse  "INTERNAL_ERROR"
 // @Router       /v1/billing/boosts/servers [get]
 func (h *BoostHandler) listServers(c *gin.Context) {
 	limit, ok := parseLimit(c)
@@ -222,7 +222,7 @@ func parseBoostListParams(c *gin.Context) (model.BoostListParams, bool) {
 	if raw := c.Query("server_id"); raw != "" {
 		serverID, err := uuid.Parse(raw)
 		if err != nil {
-			writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
+			invalidQuery(c, "server_id")
 			return model.BoostListParams{}, false
 		}
 		params.ServerID = &serverID
@@ -238,7 +238,7 @@ func parseOffset(c *gin.Context) (int, bool) {
 	}
 	offset, err := strconv.Atoi(raw)
 	if err != nil || offset < 0 {
-		writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
+		invalidQuery(c, "offset")
 		return 0, false
 	}
 	return offset, true
@@ -252,9 +252,9 @@ func parseOffset(c *gin.Context) (int, bool) {
 // @Security     BearerAuth
 // @Param        id  path  string  true  "ID del boost"  format(uuid)
 // @Success      200  {object}  boostResponse  "El boost"
-// @Failure      401  {object}  errorBody  "UNAUTHORIZED"
-// @Failure      404  {object}  errorBody  "BOOST_NOT_FOUND; también si el boost es de otro usuario o el id no es un UUID"
-// @Failure      500  {object}  errorBody  "INTERNAL_ERROR"
+// @Failure      401  {object}  apierr.ErrorResponse  "UNAUTHORIZED"
+// @Failure      404  {object}  apierr.ErrorResponse  "BOOST_NOT_FOUND; también si el boost es de otro usuario o el id no es un UUID"
+// @Failure      500  {object}  apierr.ErrorResponse  "INTERNAL_ERROR"
 // @Router       /v1/billing/boosts/{id} [get]
 func (h *BoostHandler) get(c *gin.Context) {
 	h.respond(c, h.boosts.Get)
@@ -269,10 +269,10 @@ func (h *BoostHandler) get(c *gin.Context) {
 // @Security     BearerAuth
 // @Param        id  path  string  true  "ID del boost"  format(uuid)
 // @Success      200  {object}  boostResponse  "Boost en removed"
-// @Failure      401  {object}  errorBody  "UNAUTHORIZED"
-// @Failure      404  {object}  errorBody  "BOOST_NOT_FOUND; también si el boost es de otro usuario o el id no es un UUID"
-// @Failure      409  {object}  errorBody  "BOOST_NOT_ACTIVE, solo se puede retirar un boost activo"
-// @Failure      500  {object}  errorBody  "INTERNAL_ERROR"
+// @Failure      401  {object}  apierr.ErrorResponse  "UNAUTHORIZED"
+// @Failure      404  {object}  apierr.ErrorResponse  "BOOST_NOT_FOUND; también si el boost es de otro usuario o el id no es un UUID"
+// @Failure      409  {object}  apierr.ErrorResponse  "BOOST_NOT_ACTIVE, solo se puede retirar un boost activo"
+// @Failure      500  {object}  apierr.ErrorResponse  "INTERNAL_ERROR"
 // @Router       /v1/billing/boosts/{id} [delete]
 func (h *BoostHandler) remove(c *gin.Context) {
 	h.respond(c, h.boosts.Remove)

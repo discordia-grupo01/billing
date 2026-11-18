@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/discordia-grupo01/billing/internal/apierr"
 	"github.com/discordia-grupo01/billing/internal/middleware"
 	"github.com/discordia-grupo01/billing/internal/model"
 	"github.com/discordia-grupo01/billing/internal/service"
@@ -184,9 +185,10 @@ func assertError(t *testing.T, w *httptest.ResponseRecorder, status int, code st
 	if w.Code != status {
 		t.Fatalf("status = %d, want %d (body %s)", w.Code, status, w.Body)
 	}
-	if got := decode[errorBody](t, w).Error.Code; got != code {
+	if got := decode[apierr.ErrorResponse](t, w).Error.Code; got != code {
 		t.Errorf("code = %q, want %q", got, code)
 	}
+	assertEnvelopeShape(t, w)
 }
 
 func TestListPackages(t *testing.T) {
@@ -250,7 +252,7 @@ func TestCheckoutReturnTo(t *testing.T) {
 func TestCheckoutRejectsUnknownReturnTo(t *testing.T) {
 	for _, path := range []string{pointsCheckoutPath, premiumCheckoutPath} {
 		w := do(newRouter(&fakePoints{}, &fakePremium{}), http.MethodPost, path, `{"package_id":"points_100","return_to":"desktop"}`)
-		assertError(t, w, http.StatusBadRequest, CodeInvalidRequest)
+		assertError(t, w, http.StatusBadRequest, apierr.CodeInvalidBody)
 	}
 }
 
@@ -263,7 +265,7 @@ func TestStartPointsCheckoutInvalid(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := do(newRouter(&fakePoints{}, &fakePremium{}), http.MethodPost, "/v1/billing/points/checkout", body)
-			assertError(t, w, http.StatusBadRequest, CodeInvalidRequest)
+			assertError(t, w, http.StatusBadRequest, apierr.CodeInvalidBody)
 		})
 	}
 }
@@ -275,7 +277,7 @@ func TestStartPointsCheckoutErrors(t *testing.T) {
 		code   string
 	}{
 		"unknown package": {service.ErrUnknownPackage, http.StatusBadRequest, CodeUnknownPackage},
-		"internal":        {errBoom, http.StatusInternalServerError, CodeInternalError},
+		"internal":        {errBoom, http.StatusInternalServerError, apierr.CodeInternal},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -326,7 +328,7 @@ func TestGetPointsEmptyListsAreArrays(t *testing.T) {
 func TestGetPointsInvalidLimit(t *testing.T) {
 	for _, limit := range []string{"abc", "0", "-1"} {
 		w := do(newRouter(&fakePoints{}, &fakePremium{}), http.MethodGet, "/v1/billing/points?limit="+limit, "")
-		assertError(t, w, http.StatusBadRequest, CodeInvalidRequest)
+		assertError(t, w, http.StatusBadRequest, apierr.CodeInvalidQuery)
 	}
 }
 
@@ -334,7 +336,7 @@ func TestGetPointsErrors(t *testing.T) {
 	for _, step := range []string{"Balance", "ListLedger", "ListPurchases"} {
 		t.Run(step, func(t *testing.T) {
 			w := do(newRouter(&fakePoints{err: errBoom, failOn: step}, &fakePremium{}), http.MethodGet, "/v1/billing/points", "")
-			assertError(t, w, http.StatusInternalServerError, CodeInternalError)
+			assertError(t, w, http.StatusInternalServerError, apierr.CodeInternal)
 		})
 	}
 }
@@ -362,7 +364,7 @@ func TestGetPurchaseNotFound(t *testing.T) {
 
 func TestGetPurchaseError(t *testing.T) {
 	w := do(newRouter(&fakePoints{err: errBoom}, &fakePremium{}), http.MethodGet, "/v1/billing/purchases/"+purchaseID.String(), "")
-	assertError(t, w, http.StatusInternalServerError, CodeInternalError)
+	assertError(t, w, http.StatusInternalServerError, apierr.CodeInternal)
 }
 
 func TestGetPremium(t *testing.T) {
@@ -403,7 +405,7 @@ func TestGetPremiumRefresh(t *testing.T) {
 
 func TestGetPremiumError(t *testing.T) {
 	w := do(newRouter(&fakePoints{}, &fakePremium{err: errBoom}), http.MethodGet, "/v1/billing/premium", "")
-	assertError(t, w, http.StatusInternalServerError, CodeInternalError)
+	assertError(t, w, http.StatusInternalServerError, apierr.CodeInternal)
 }
 
 func TestStartPremiumCheckout(t *testing.T) {
@@ -432,10 +434,10 @@ func TestStartPremiumCheckoutErrors(t *testing.T) {
 		status int
 		code   string
 	}{
-		"invalid email":       {`{"payer_email":"nope"}`, nil, http.StatusBadRequest, CodeInvalidRequest},
+		"invalid email":       {`{"payer_email":"nope"}`, nil, http.StatusBadRequest, apierr.CodeInvalidBody},
 		"already subscribed":  {"", service.ErrAlreadySubscribed, http.StatusConflict, CodeAlreadySubscribed},
 		"payer email missing": {"", service.ErrPayerEmailRequired, http.StatusBadRequest, CodePayerEmailRequired},
-		"internal":            {"", errBoom, http.StatusInternalServerError, CodeInternalError},
+		"internal":            {"", errBoom, http.StatusInternalServerError, apierr.CodeInternal},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -510,7 +512,7 @@ func TestCheckoutIdempotencyErrors(t *testing.T) {
 
 			r = routerWithRunner(&fakeRunner{})
 			tooLong := strings.Repeat("k", maxIdempotencyKeyLength+1)
-			assertError(t, doWithKey(r, path, pointsCheckoutBody, tooLong), http.StatusBadRequest, CodeInvalidRequest)
+			assertError(t, doWithKey(r, path, pointsCheckoutBody, tooLong), http.StatusBadRequest, apierr.CodeInvalidBody)
 		})
 	}
 }

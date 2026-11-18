@@ -200,6 +200,7 @@ type ledgerEntryResponse struct {
 	// Positive when points are credited, negative when they are taken back or spent.
 	Delta     int64     `json:"delta"`
 	Reason    string    `json:"reason" enums:"purchase,refund,chargeback,boost,boost_refund"`
+	ServerID  *string   `json:"server_id,omitempty" format:"uuid" validate:"optional"`
 	CreatedAt time.Time `json:"created_at" format:"date-time"`
 } // @name LedgerEntry
 
@@ -250,7 +251,17 @@ func (h *BillingHandler) getPoints(c *gin.Context) {
 		Purchases: make([]purchaseResponse, 0, len(purchases)),
 	}
 	for _, e := range entries {
-		resp.Ledger = append(resp.Ledger, ledgerEntryResponse{Delta: e.Delta, Reason: string(e.Reason), CreatedAt: e.CreatedAt})
+		var serverID *string
+		if e.ServerID != nil {
+			s := e.ServerID.String()
+			serverID = &s
+		}
+		resp.Ledger = append(resp.Ledger, ledgerEntryResponse{
+			Delta:     e.Delta,
+			Reason:    string(e.Reason),
+			ServerID:  serverID,
+			CreatedAt: e.CreatedAt,
+		})
 	}
 	for _, p := range purchases {
 		resp.Purchases = append(resp.Purchases, toPurchaseResponse(p))

@@ -866,6 +866,9 @@ components:
             - boost
             - boost_refund
           type: string
+        server_id:
+          format: uuid
+          type: string
       required:
         - created_at
         - delta

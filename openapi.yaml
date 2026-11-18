@@ -866,10 +866,13 @@ components:
             - boost
             - boost_refund
           type: string
+        server_id:
+          type: string
       required:
         - created_at
         - delta
         - reason
+        - server_id
       type: object
     Package:
       properties:

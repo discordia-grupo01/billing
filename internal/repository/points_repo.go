@@ -313,8 +313,13 @@ func (r *PointsRepository) Balance(ctx context.Context, userID uuid.UUID) (int64
 
 func (r *PointsRepository) ListLedger(ctx context.Context, userID uuid.UUID, limit int) ([]model.LedgerEntry, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, user_id, delta, reason, ref_id, created_at FROM point_ledger
-		WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2`, userID, limit)
+		SELECT pl.id, pl.user_id, pl.delta, pl.reason, pl.ref_id, sb.server_id, pl.created_at
+		FROM point_ledger pl
+		LEFT JOIN server_boosts sb
+		    ON (pl.reason IN ('boost', 'boost_refund') AND sb.id::text = pl.ref_id)
+		WHERE pl.user_id = $1
+		ORDER BY pl.created_at DESC, pl.id DESC
+		LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("repository: list ledger: %w", err)
 	}
@@ -322,7 +327,7 @@ func (r *PointsRepository) ListLedger(ctx context.Context, userID uuid.UUID, lim
 	var out []model.LedgerEntry
 	for rows.Next() {
 		var e model.LedgerEntry
-		if err := rows.Scan(&e.ID, &e.UserID, &e.Delta, &e.Reason, &e.RefID, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.UserID, &e.Delta, &e.Reason, &e.RefID, &e.ServerID, &e.CreatedAt); err != nil {
 			return nil, fmt.Errorf("repository: list ledger: %w", err)
 		}
 		out = append(out, e)

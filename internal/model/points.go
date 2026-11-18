@@ -48,5 +48,6 @@ type LedgerEntry struct {
 	Delta     int64
 	Reason    LedgerReason
 	RefID     string
+	ServerID  *uuid.UUID // nil for purchases/refunds; server UUID for boost/boost_refund
 	CreatedAt time.Time
 }

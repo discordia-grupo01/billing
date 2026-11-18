@@ -91,3 +91,30 @@ func TestFallbacks(t *testing.T) {
 	assertEnvelope(t, serve(r, http.MethodGet, "/nope"), http.StatusNotFound, CodeNotFound)
 	assertEnvelope(t, serve(r, http.MethodPost, "/only-get"), http.StatusMethodNotAllowed, CodeMethodNotAllowed)
 }
+
+// El Allow de la 405 debe ser el de la ruta más específica, no el que arma Gin
+// mezclando /:id con /servers.
+func TestMethodNotAllowedAllowHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	RegisterFallbacks(r)
+	ok := func(c *gin.Context) { c.Status(http.StatusNoContent) }
+	r.POST("/boosts", ok)
+	r.GET("/boosts", ok)
+	r.GET("/boosts/servers", ok)
+	r.GET("/boosts/:id", ok)
+	r.DELETE("/boosts/:id", ok)
+
+	cases := map[string]string{
+		"/boosts/servers": "GET",
+		"/boosts":         "GET, POST",
+		"/boosts/abc":     "DELETE, GET",
+	}
+	for path, want := range cases {
+		w := serve(r, http.MethodOptions, path)
+		assertEnvelope(t, w, http.StatusMethodNotAllowed, CodeMethodNotAllowed)
+		if got := w.Header().Get("Allow"); got != want {
+			t.Errorf("Allow en %s = %q, quiero %q", path, got, want)
+		}
+	}
+}

@@ -5,6 +5,8 @@ package apierr
 
 import (
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -85,5 +87,59 @@ func Internal(c *gin.Context) {
 func RegisterFallbacks(r *gin.Engine) {
 	r.HandleMethodNotAllowed = true
 	r.NoRoute(NotFound)
-	r.NoMethod(MethodNotAllowed)
+	r.NoMethod(func(c *gin.Context) {
+		// Gin arma Allow mezclando rutas con parámetro (DELETE /boosts/:id
+		// aparecería para /boosts/servers); se reemplaza por el de la ruta
+		// más específica, que es lo que declara el contrato.
+		if allow := allowedMethods(r, c.Request.URL.Path); allow != "" {
+			c.Header("Allow", allow)
+		}
+		MethodNotAllowed(c)
+	})
+}
+
+// allowedMethods devuelve los métodos de la ruta más específica (la que menos
+// parámetros usa) que coincide con path, ordenados y separados por coma.
+func allowedMethods(r *gin.Engine, path string) string {
+	best := -1
+	methods := map[string]struct{}{}
+	for _, ri := range r.Routes() {
+		params, ok := matchRoute(ri.Path, path)
+		if !ok {
+			continue
+		}
+		if best == -1 || params < best {
+			best = params
+			methods = map[string]struct{}{}
+		}
+		if params == best {
+			methods[ri.Method] = struct{}{}
+		}
+	}
+	list := make([]string, 0, len(methods))
+	for m := range methods {
+		list = append(list, m)
+	}
+	sort.Strings(list)
+	return strings.Join(list, ", ")
+}
+
+// matchRoute indica si path encaja con el patrón de Gin (segmentos :param) y
+// cuántos parámetros usa.
+func matchRoute(pattern, path string) (int, bool) {
+	ps := strings.Split(strings.Trim(pattern, "/"), "/")
+	xs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(ps) != len(xs) {
+		return 0, false
+	}
+	params := 0
+	for i, seg := range ps {
+		switch {
+		case strings.HasPrefix(seg, ":"):
+			params++
+		case seg != xs[i]:
+			return 0, false
+		}
+	}
+	return params, true
 }

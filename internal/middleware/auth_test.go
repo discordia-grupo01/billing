@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -80,6 +81,19 @@ func TestAuthRejects(t *testing.T) {
 			w, _ := serve(header)
 			if w.Code != http.StatusUnauthorized {
 				t.Errorf("status = %d, want 401", w.Code)
+			}
+			var body struct {
+				Error struct {
+					Code    string         `json:"code"`
+					Message string         `json:"message"`
+					Details map[string]any `json:"details"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not JSON: %q", w.Body)
+			}
+			if body.Error.Code != "UNAUTHORIZED" || body.Error.Message == "" || body.Error.Details == nil {
+				t.Errorf("error = %+v, want UNAUTHORIZED with message and details {}", body.Error)
 			}
 		})
 	}

@@ -15,6 +15,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/discordia-grupo01/billing/internal/apierr"
 )
 
 const EnvLevel = "LOG_LEVEL"
@@ -237,7 +239,7 @@ func Recovery() gin.HandlerFunc {
 			"error", fmt.Sprint(recovered),
 			"stack", string(debug.Stack()),
 		)
-		c.AbortWithStatus(http.StatusInternalServerError)
+		apierr.Internal(c)
 	})
 }
 

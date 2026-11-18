@@ -48,7 +48,7 @@ type simulateChargeRequest struct {
 func (h *DevHandler) simulateCharge(c *gin.Context) {
 	var req simulateChargeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
+		invalidBody(c)
 		return
 	}
 	view, err := h.simulator.SimulateCharge(c.Request.Context(), req.UserID, req.Outcome == "approved")
@@ -68,7 +68,7 @@ type simulateExpiryRequest struct {
 func (h *DevHandler) simulateExpiry(c *gin.Context) {
 	var req simulateExpiryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
+		invalidBody(c)
 		return
 	}
 	view, err := h.simulator.SimulateExpiry(c.Request.Context(), req.UserID)

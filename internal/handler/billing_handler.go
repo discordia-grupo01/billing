@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/discordia-grupo01/billing/internal/apierr"
 	"github.com/discordia-grupo01/billing/internal/middleware"
 	"github.com/discordia-grupo01/billing/internal/model"
 	"github.com/discordia-grupo01/billing/internal/service"
@@ -90,7 +91,7 @@ type packagesResponse struct {
 // @Produce      json
 // @Security     BearerAuth
 // @Success      200  {object}  packagesResponse  "Paquetes disponibles"
-// @Failure      401  {object}  errorBody  "UNAUTHORIZED"
+// @Failure      401  {object}  apierr.ErrorResponse  "UNAUTHORIZED"
 // @Router       /v1/billing/points/packages [get]
 func (h *BillingHandler) listPackages(c *gin.Context) {
 	pkgs := h.points.Packages()
@@ -144,16 +145,16 @@ type premiumCheckoutResponse struct {
 // @Param        Idempotency-Key  header  string                 false  "Clave única por intento de compra, por ejemplo un UUID generado al abrir la pantalla. Repetir el pedido con la misma clave devuelve el mismo checkout en vez de crear otro; se recuerda durante 24 horas."  maxlength(255)
 // @Param        body             body    pointsCheckoutRequest  true   "Paquete a comprar"
 // @Success      201  {object}  checkoutResponse  "Compra creada"
-// @Failure      400  {object}  errorBody  "INVALID_REQUEST o UNKNOWN_PACKAGE"
-// @Failure      401  {object}  errorBody  "UNAUTHORIZED"
-// @Failure      409  {object}  errorBody  "CHECKOUT_IN_PROGRESS, otro pedido con la misma Idempotency-Key sigue en curso"
-// @Failure      422  {object}  errorBody  "IDEMPOTENCY_KEY_REUSED, la Idempotency-Key ya se usó para otro pedido"
-// @Failure      500  {object}  errorBody  "INTERNAL_ERROR"
+// @Failure      400  {object}  apierr.ErrorResponse  "INVALID_BODY, o UNKNOWN_PACKAGE"
+// @Failure      401  {object}  apierr.ErrorResponse  "UNAUTHORIZED"
+// @Failure      409  {object}  apierr.ErrorResponse  "CHECKOUT_IN_PROGRESS, otro pedido con la misma Idempotency-Key sigue en curso"
+// @Failure      422  {object}  apierr.ErrorResponse  "IDEMPOTENCY_KEY_REUSED, la Idempotency-Key ya se usó para otro pedido"
+// @Failure      500  {object}  apierr.ErrorResponse  "INTERNAL_ERROR"
 // @Router       /v1/billing/points/checkout [post]
 func (h *BillingHandler) startPointsCheckout(c *gin.Context) {
 	var req pointsCheckoutRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
+		invalidBody(c)
 		return
 	}
 	key, ok := idempotencyKey(c)
@@ -219,9 +220,9 @@ type pointsResponse struct {
 // @Security     BearerAuth
 // @Param        limit  query  int  false  "Cuántos movimientos y cuántas compras devolver; aplica a las dos listas. Un valor mayor que 100 se trata como 100."  minimum(1)  default(20)
 // @Success      200  {object}  pointsResponse  "Saldo y listas"
-// @Failure      400  {object}  errorBody  "INVALID_REQUEST"
-// @Failure      401  {object}  errorBody  "UNAUTHORIZED"
-// @Failure      500  {object}  errorBody  "INTERNAL_ERROR"
+// @Failure      400  {object}  apierr.ErrorResponse  "INVALID_QUERY"
+// @Failure      401  {object}  apierr.ErrorResponse  "UNAUTHORIZED"
+// @Failure      500  {object}  apierr.ErrorResponse  "INTERNAL_ERROR"
 // @Router       /v1/billing/points [get]
 func (h *BillingHandler) getPoints(c *gin.Context) {
 	limit, ok := parseLimit(c)
@@ -277,7 +278,7 @@ func parseLimit(c *gin.Context) (int, bool) {
 	}
 	limit, err := strconv.Atoi(raw)
 	if err != nil || limit < 1 {
-		writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
+		invalidQuery(c, "limit")
 		return 0, false
 	}
 	return limit, true
@@ -292,9 +293,9 @@ func parseLimit(c *gin.Context) (int, bool) {
 // @Security     BearerAuth
 // @Param        id  path  string  true  "ID de la compra"  format(uuid)
 // @Success      200  {object}  purchaseResponse  "La compra"
-// @Failure      401  {object}  errorBody  "UNAUTHORIZED"
-// @Failure      404  {object}  errorBody  "PURCHASE_NOT_FOUND; también si la compra es de otro usuario o el id no es un UUID"
-// @Failure      500  {object}  errorBody  "INTERNAL_ERROR"
+// @Failure      401  {object}  apierr.ErrorResponse  "UNAUTHORIZED"
+// @Failure      404  {object}  apierr.ErrorResponse  "PURCHASE_NOT_FOUND; también si la compra es de otro usuario o el id no es un UUID"
+// @Failure      500  {object}  apierr.ErrorResponse  "INTERNAL_ERROR"
 // @Router       /v1/billing/purchases/{id} [get]
 func (h *BillingHandler) getPurchase(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
@@ -343,8 +344,8 @@ func toPremiumResponse(v service.PremiumView) premiumResponse {
 // @Security     BearerAuth
 // @Param        refresh  query  string  false  "Con `1` o `true`, consulta a Mercado Pago antes de responder (usar al volver del checkout); cualquier otro valor se ignora"
 // @Success      200  {object}  premiumResponse  "Estado de Premium"
-// @Failure      401  {object}  errorBody  "UNAUTHORIZED"
-// @Failure      500  {object}  errorBody  "INTERNAL_ERROR"
+// @Failure      401  {object}  apierr.ErrorResponse  "UNAUTHORIZED"
+// @Failure      500  {object}  apierr.ErrorResponse  "INTERNAL_ERROR"
 // @Router       /v1/billing/premium [get]
 func (h *BillingHandler) getPremium(c *gin.Context) {
 	refresh := c.Query("refresh") == "1" || c.Query("refresh") == "true"
@@ -374,18 +375,18 @@ type premiumCheckoutRequest struct {
 // @Param        Idempotency-Key  header  string                 false  "Clave única por intento de compra, por ejemplo un UUID generado al abrir la pantalla. Repetir el pedido con la misma clave devuelve el mismo checkout en vez de crear otro; se recuerda durante 24 horas."  maxlength(255)
 // @Param        body             body    premiumCheckoutRequest false  "Datos del pagador"
 // @Success      201  {object}  premiumCheckoutResponse  "Suscripción creada"
-// @Failure      400  {object}  errorBody  "INVALID_REQUEST o PAYER_EMAIL_REQUIRED"
-// @Failure      401  {object}  errorBody  "UNAUTHORIZED"
-// @Failure      409  {object}  errorBody  "ALREADY_SUBSCRIBED, ya tiene una suscripción que Mercado Pago sigue cobrando; o CHECKOUT_IN_PROGRESS, otro pedido con la misma Idempotency-Key sigue en curso"
-// @Failure      422  {object}  errorBody  "IDEMPOTENCY_KEY_REUSED, la Idempotency-Key ya se usó para otro pedido"
-// @Failure      500  {object}  errorBody  "INTERNAL_ERROR"
+// @Failure      400  {object}  apierr.ErrorResponse  "INVALID_BODY o PAYER_EMAIL_REQUIRED"
+// @Failure      401  {object}  apierr.ErrorResponse  "UNAUTHORIZED"
+// @Failure      409  {object}  apierr.ErrorResponse  "ALREADY_SUBSCRIBED, ya tiene una suscripción que Mercado Pago sigue cobrando; o CHECKOUT_IN_PROGRESS, otro pedido con la misma Idempotency-Key sigue en curso"
+// @Failure      422  {object}  apierr.ErrorResponse  "IDEMPOTENCY_KEY_REUSED, la Idempotency-Key ya se usó para otro pedido"
+// @Failure      500  {object}  apierr.ErrorResponse  "INTERNAL_ERROR"
 // @Router       /v1/billing/premium/checkout [post]
 func (h *BillingHandler) startPremiumCheckout(c *gin.Context) {
 	var req premiumCheckoutRequest
 	// The body is optional: in sandbox the test buyer's email replaces it.
 	if c.Request.ContentLength != 0 {
 		if err := c.ShouldBindJSON(&req); err != nil {
-			writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
+			invalidBody(c)
 			return
 		}
 	}
@@ -413,7 +414,7 @@ func (h *BillingHandler) startPremiumCheckout(c *gin.Context) {
 func idempotencyKey(c *gin.Context) (string, bool) {
 	key := c.GetHeader(idempotencyKeyHeader)
 	if len(key) > maxIdempotencyKeyLength {
-		writeError(c, http.StatusBadRequest, CodeInvalidRequest, invalidRequestMessage)
+		apierr.InvalidBody(c, invalidRequestMessage, map[string]any{"header": "Idempotency-Key"})
 		return "", false
 	}
 	return key, true
@@ -426,9 +427,9 @@ func idempotencyKey(c *gin.Context) (string, bool) {
 // @Produce      json
 // @Security     BearerAuth
 // @Success      200  {object}  premiumResponse  "Premium sin renovación"
-// @Failure      401  {object}  errorBody  "UNAUTHORIZED"
-// @Failure      409  {object}  errorBody  "NO_LIVE_SUBSCRIPTION, no hay una suscripción que cancelar"
-// @Failure      500  {object}  errorBody  "INTERNAL_ERROR"
+// @Failure      401  {object}  apierr.ErrorResponse  "UNAUTHORIZED"
+// @Failure      409  {object}  apierr.ErrorResponse  "NO_LIVE_SUBSCRIPTION, no hay una suscripción que cancelar"
+// @Failure      500  {object}  apierr.ErrorResponse  "INTERNAL_ERROR"
 // @Router       /v1/billing/premium/cancel [post]
 func (h *BillingHandler) cancelPremium(c *gin.Context) {
 	view, err := h.premium.Cancel(c.Request.Context(), middleware.UserID(c))

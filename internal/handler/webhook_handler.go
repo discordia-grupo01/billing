@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/mercadopago/sdk-go/pkg/webhook"
 
+	"github.com/discordia-grupo01/billing/internal/apierr"
 	"github.com/discordia-grupo01/billing/internal/service"
 )
 
@@ -110,14 +111,14 @@ func (f *flexibleID) UnmarshalJSON(b []byte) error {
 // @Param        x-request-id  header  string                false  "ID del pedido, también cubierto por la firma"
 // @Param        body          body    notification          false  "Cuerpo informativo de la notificación"
 // @Success      200  "Procesado o ignorado (tópico desconocido, recurso ajeno o inconsistente)"
-// @Failure      401  {object}  errorBody  "INVALID_SIGNATURE"
-// @Failure      413  {object}  errorBody  "El cuerpo supera los 64 KB"
-// @Failure      500  {object}  errorBody  "INTERNAL_ERROR, falló el procesamiento; Mercado Pago reintenta"
+// @Failure      401  {object}  apierr.ErrorResponse  "INVALID_SIGNATURE"
+// @Failure      413  {object}  apierr.ErrorResponse  "PAYLOAD_TOO_LARGE, el cuerpo supera los 64 KB"
+// @Failure      500  {object}  apierr.ErrorResponse  "INTERNAL_ERROR, falló el procesamiento; Mercado Pago reintenta"
 // @Router       /webhooks/mercadopago [post]
 func (h *WebhookHandler) receive(c *gin.Context) {
 	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, maxWebhookBody))
 	if err != nil {
-		writeError(c, http.StatusRequestEntityTooLarge, CodeInvalidRequest, invalidRequestMessage)
+		apierr.PayloadTooLarge(c, payloadTooLargeMessage, maxWebhookBody)
 		return
 	}
 	requestID := c.GetHeader("x-request-id")
@@ -183,7 +184,7 @@ func (h *WebhookHandler) receive(c *gin.Context) {
 	default:
 		// MP retries later; every use case is safe to run again.
 		log.Error("webhook processing failed", "error", err)
-		writeError(c, http.StatusInternalServerError, CodeInternalError, internalErrorMessage)
+		writeError(c, http.StatusInternalServerError, apierr.CodeInternal, internalErrorMessage)
 	}
 }
 

@@ -1,12 +1,13 @@
 package middleware
 
 import (
-	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+
+	"github.com/discordia-grupo01/billing/internal/apierr"
 )
 
 const ctxUserID = "auth.user_id"
@@ -18,7 +19,7 @@ func Auth(secret []byte) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw, ok := strings.CutPrefix(c.GetHeader("Authorization"), "Bearer ")
 		if !ok {
-			unauthorized(c)
+			apierr.Unauthorized(c)
 			return
 		}
 		var claims jwt.RegisteredClaims
@@ -26,12 +27,12 @@ func Auth(secret []byte) gin.HandlerFunc {
 			return secret, nil
 		}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired())
 		if err != nil {
-			unauthorized(c)
+			apierr.Unauthorized(c)
 			return
 		}
 		userID, err := uuid.Parse(claims.Subject)
 		if err != nil {
-			unauthorized(c)
+			apierr.Unauthorized(c)
 			return
 		}
 		SetUserID(c, userID)
@@ -50,10 +51,4 @@ func UserID(c *gin.Context) uuid.UUID {
 	id, _ := c.Get(ctxUserID)
 	userID, _ := id.(uuid.UUID)
 	return userID
-}
-
-func unauthorized(c *gin.Context) {
-	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-		"error": gin.H{"code": "UNAUTHORIZED", "message": "La sesión expiró o ya no es válida"},
-	})
 }

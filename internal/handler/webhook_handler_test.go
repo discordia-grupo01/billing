@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/discordia-grupo01/billing/internal/apierr"
 	"github.com/discordia-grupo01/billing/internal/service"
 )
 
@@ -264,15 +265,16 @@ func TestWebhookFailureAsksForRetry(t *testing.T) {
 	rec := &recorder{err: errBoom}
 	w := send(newWebhookRouter(rec), delivery{topic: "order", queryID: "ORD1"})
 
-	assertError(t, w, http.StatusInternalServerError, CodeInternalError)
+	assertError(t, w, http.StatusInternalServerError, apierr.CodeInternal)
 }
 
 func TestWebhookRejectsHugeBody(t *testing.T) {
 	rec := &recorder{}
 	w := send(newWebhookRouter(rec), delivery{topic: "order", queryID: "ORD1", body: strings.Repeat("x", maxWebhookBody+1)})
 
-	if w.Code != http.StatusRequestEntityTooLarge || len(rec.calls) != 0 {
-		t.Errorf("status %d, calls %v", w.Code, rec.calls)
+	assertError(t, w, http.StatusRequestEntityTooLarge, apierr.CodePayloadTooLarge)
+	if len(rec.calls) != 0 {
+		t.Errorf("calls %v", rec.calls)
 	}
 }
 

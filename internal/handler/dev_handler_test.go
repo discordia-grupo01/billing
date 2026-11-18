@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/discordia-grupo01/billing/internal/apierr"
 	"github.com/discordia-grupo01/billing/internal/service"
 )
 
@@ -64,7 +65,7 @@ func TestSimulateChargeInvalid(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := do(newDevRouter(&fakeSimulator{}), http.MethodPost, "/dev/billing/simulate-charge", body)
-			assertError(t, w, http.StatusBadRequest, CodeInvalidRequest)
+			assertError(t, w, http.StatusBadRequest, apierr.CodeInvalidBody)
 		})
 	}
 }
@@ -89,11 +90,11 @@ func TestSimulateExpiry(t *testing.T) {
 
 func TestSimulateExpiryErrors(t *testing.T) {
 	assertError(t, do(newDevRouter(&fakeSimulator{}), http.MethodPost, "/dev/billing/simulate-expiry", `{}`),
-		http.StatusBadRequest, CodeInvalidRequest)
+		http.StatusBadRequest, apierr.CodeInvalidBody)
 	assertError(t, do(newDevRouter(&fakeSimulator{err: service.ErrNoActivePremium}), http.MethodPost,
 		"/dev/billing/simulate-expiry", `{"user_id":"`+userID.String()+`"}`), http.StatusConflict, CodeNoActivePremium)
 	assertError(t, do(newDevRouter(&fakeSimulator{err: errBoom}), http.MethodPost,
-		"/dev/billing/simulate-expiry", `{"user_id":"`+userID.String()+`"}`), http.StatusInternalServerError, CodeInternalError)
+		"/dev/billing/simulate-expiry", `{"user_id":"`+userID.String()+`"}`), http.StatusInternalServerError, apierr.CodeInternal)
 }
 
 func TestNewDevHandlerDefaultsLogger(t *testing.T) {

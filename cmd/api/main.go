@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/discordia-grupo01/billing/internal/apierr"
 	"github.com/discordia-grupo01/billing/internal/config"
 	"github.com/discordia-grupo01/billing/internal/handler"
 	"github.com/discordia-grupo01/billing/internal/jobs"
@@ -44,7 +45,7 @@ const (
 // @description
 // @description  Las rutas `/v1/billing/**` requieren el access token de identify (`Authorization: Bearer <JWT>`, HS256): el servicio lo verifica aunque Kong también lo haga, porque mueve dinero. Los montos van en centavos de ARS.
 // @description
-// @description  Todos los errores tienen la forma `{"error": {"code": "...", "message": "...", "details": {}}}`; `details` solo viene en algunos, como `INSUFFICIENT_POINTS`.
+// @description  Todos los errores tienen la forma `{"error": {"code": "...", "message": "...", "details": {}}}`; `details` siempre viene y es un objeto, vacío cuando no hay nada que agregar; por ejemplo `INSUFFICIENT_POINTS` trae `balance`, `cost` y `missing`.
 // @description
 // @description  Las rutas de simulación de desarrollo (`/dev/billing/simulate-*`) solo existen con `BILLING_DEV_TOOLS=true`, nunca en producción, y no forman parte de este contrato.
 // @host         localhost:8080
@@ -104,6 +105,7 @@ func main() {
 
 	router := gin.New()
 	router.Use(telemetry.Middleware(), logging.Middleware(), logging.Recovery())
+	apierr.RegisterFallbacks(router)
 	checkouts := service.NewCheckoutGuard(repository.NewCheckoutRequestRepository(pool), logger)
 	handler.NewBillingHandler(points, premium, checkouts, logger).Register(router, middleware.Auth([]byte(cfg.JWTSecret)))
 	handler.NewWebhookHandler(points, premium, cfg.MPWebhookSecret, logger).Register(router)

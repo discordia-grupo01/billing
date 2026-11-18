@@ -8,7 +8,7 @@ info:
     Las rutas `/v1/billing/**` requieren el access token de identify (`Authorization: Bearer <JWT>`, HS256): el servicio lo verifica aunque Kong también lo haga, porque mueve dinero. Los montos van en centavos de ARS.
 
 
-    Todos los errores tienen la forma `{"error": {"code": "...", "message": "...", "details": {}}}`; `details` solo viene en algunos, como `INSUFFICIENT_POINTS`.
+    Todos los errores tienen la forma `{"error": {"code": "...", "message": "...", "details": {}}}`; `details` siempre viene y es un objeto, vacío cuando no hay nada que agregar; por ejemplo `INSUFFICIENT_POINTS` trae `balance`, `cost` y `missing`.
 
 
     Las rutas de simulación de desarrollo (`/dev/billing/simulate-*`) solo existen con `BILLING_DEV_TOOLS=true`, nunca en producción, y no forman parte de este contrato.
@@ -81,7 +81,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/BoostPage"
         "400":
-          description: INVALID_REQUEST
+          description: INVALID_QUERY
           content:
             application/json:
               schema:
@@ -136,7 +136,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Boost"
         "400":
-          description: INVALID_REQUEST
+          description: INVALID_BODY
           content:
             application/json:
               schema:
@@ -287,7 +287,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/BoostedServerPage"
         "400":
-          description: INVALID_REQUEST
+          description: INVALID_QUERY
           content:
             application/json:
               schema:
@@ -328,7 +328,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Points"
         "400":
-          description: INVALID_REQUEST
+          description: INVALID_QUERY
           content:
             application/json:
               schema:
@@ -380,7 +380,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Checkout"
         "400":
-          description: INVALID_REQUEST o UNKNOWN_PACKAGE
+          description: INVALID_BODY, o UNKNOWN_PACKAGE
           content:
             application/json:
               schema:
@@ -529,7 +529,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PremiumCheckout"
         "400":
-          description: INVALID_REQUEST o PAYER_EMAIL_REQUIRED
+          description: INVALID_BODY o PAYER_EMAIL_REQUIRED
           content:
             application/json:
               schema:
@@ -655,7 +655,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "413":
-          description: El cuerpo supera los 64 KB
+          description: PAYLOAD_TOO_LARGE, el cuerpo supera los 64 KB
           content:
             application/json:
               schema:
@@ -682,7 +682,7 @@ components:
     ApiError:
       properties:
         code:
-          example: INVALID_REQUEST
+          example: INVALID_BODY
           type: string
         details:
           additionalProperties: {}
@@ -692,6 +692,7 @@ components:
           type: string
       required:
         - code
+        - details
         - message
       type: object
     Boost:

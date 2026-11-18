@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/discordia-grupo01/billing/internal/apierr"
 	"github.com/discordia-grupo01/billing/internal/model"
 	"github.com/discordia-grupo01/billing/internal/service"
 )
@@ -114,9 +115,10 @@ func TestBoostRequestRejectsBadInputBeforeTheService(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := &fakeBoosts{}
 			w := boostDo(boostRouter(f), http.MethodPost, "/v1/billing/boosts", tc.body, tc.headers)
-			if w.Code != http.StatusBadRequest || f.calls != 0 {
-				t.Errorf("status = %d, calls = %d", w.Code, f.calls)
+			if f.calls != 0 {
+				t.Errorf("calls = %d", f.calls)
 			}
+			assertError(t, w, http.StatusBadRequest, apierr.CodeInvalidBody)
 		})
 	}
 }
@@ -195,8 +197,14 @@ func TestBoostListWithoutFilters(t *testing.T) {
 func TestBoostListBadQueryAndFailure(t *testing.T) {
 	for _, query := range []string{"limit=0", "offset=-1", "offset=x", "server_id=nope"} {
 		f := &fakeBoosts{}
-		if w := boostDo(boostRouter(f), http.MethodGet, "/v1/billing/boosts?"+query, "", nil); w.Code != http.StatusBadRequest || f.calls != 0 {
-			t.Errorf("%s: status = %d, calls = %d", query, w.Code, f.calls)
+		w := boostDo(boostRouter(f), http.MethodGet, "/v1/billing/boosts?"+query, "", nil)
+		assertError(t, w, http.StatusBadRequest, apierr.CodeInvalidQuery)
+		param := strings.SplitN(query, "=", 2)[0]
+		if got := decode[apierr.ErrorResponse](t, w).Error.Details["param"]; got != param {
+			t.Errorf("%s: details.param = %v, want %s", query, got, param)
+		}
+		if f.calls != 0 {
+			t.Errorf("%s: calls = %d", query, f.calls)
 		}
 	}
 	if w := boostDo(boostRouter(&fakeBoosts{err: errBoom}), http.MethodGet, "/v1/billing/boosts", "", nil); w.Code != http.StatusInternalServerError {
@@ -265,7 +273,7 @@ func TestBoostGetAndRemoveErrors(t *testing.T) {
 		"bad id":     {"/v1/billing/boosts/nope", nil, http.StatusNotFound, CodeBoostNotFound},
 		"not found":  {"/v1/billing/boosts/" + uuid.NewString(), model.ErrNotFound, http.StatusNotFound, CodeBoostNotFound},
 		"not active": {"/v1/billing/boosts/" + uuid.NewString(), model.ErrBoostNotActive, http.StatusConflict, CodeBoostNotActive},
-		"failure":    {"/v1/billing/boosts/" + uuid.NewString(), errBoom, http.StatusInternalServerError, CodeInternalError},
+		"failure":    {"/v1/billing/boosts/" + uuid.NewString(), errBoom, http.StatusInternalServerError, apierr.CodeInternal},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

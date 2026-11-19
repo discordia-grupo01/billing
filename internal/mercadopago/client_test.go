@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 
 	"github.com/mercadopago/sdk-go/pkg/config"
 	"github.com/mercadopago/sdk-go/pkg/mperror"
 
+	"github.com/discordia-grupo01/billing/internal/circuitbreaker"
 	"github.com/discordia-grupo01/billing/internal/model"
 	"github.com/discordia-grupo01/billing/internal/service"
 )
@@ -287,5 +289,46 @@ func TestRefundPaymentNotFound(t *testing.T) {
 
 	if err := client.RefundPayment(context.Background(), "555", "key"); !errors.Is(err, service.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestClientStopsCallingMercadoPagoWhenItKeepsFailing(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(srv.Close)
+	target, _ := url.Parse(srv.URL)
+	client, err := NewClient("TEST-TOKEN", config.WithHTTPClient(redirectRequester{target}))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	for i := 0; i < circuitbreaker.DefaultFailureThreshold; i++ {
+		if _, err := client.GetPayment(context.Background(), "1"); err == nil {
+			t.Fatalf("call %d: expected an error", i)
+		}
+	}
+	callsBeforeOpen := calls.Load()
+
+	_, err = client.GetPayment(context.Background(), "1")
+
+	if !errors.Is(err, circuitbreaker.ErrOpen) {
+		t.Fatalf("err = %v, want the circuit to be open", err)
+	}
+	if calls.Load() != callsBeforeOpen {
+		t.Fatalf("Mercado Pago was called %d more times while the circuit was open", calls.Load()-callsBeforeOpen)
+	}
+}
+
+func TestClientNotFoundDoesNotOpenTheCircuit(t *testing.T) {
+	client, _ := newServer(t, http.StatusNotFound, `{"message":"not found","status":404}`)
+
+	for i := 0; i < circuitbreaker.DefaultFailureThreshold+2; i++ {
+		_, err := client.GetPayment(context.Background(), "1")
+		if errors.Is(err, circuitbreaker.ErrOpen) {
+			t.Fatalf("call %d opened the circuit on a 404", i)
+		}
 	}
 }

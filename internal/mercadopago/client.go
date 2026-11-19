@@ -18,6 +18,8 @@ import (
 	"github.com/mercadopago/sdk-go/pkg/refund"
 	"github.com/mercadopago/sdk-go/pkg/requestoptions"
 
+	"github.com/discordia-grupo01/billing/internal/circuitbreaker"
+	"github.com/discordia-grupo01/billing/internal/logging"
 	"github.com/discordia-grupo01/billing/internal/model"
 	"github.com/discordia-grupo01/billing/internal/service"
 )
@@ -53,6 +55,7 @@ func NewClient(accessToken string, opts ...config.Option) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mercadopago: %w", err)
 	}
+	cfg.Requester = circuitbreaker.NewHTTPClient(newBreaker(), cfg.Requester)
 	return &Client{
 		orders:        order.NewClient(cfg),
 		subscriptions: preapproval.NewClient(cfg),
@@ -61,6 +64,15 @@ func NewClient(accessToken string, opts ...config.Option) (*Client, error) {
 		chargebacks:   chargeback.NewClient(cfg),
 		refunds:       refund.NewClient(cfg),
 	}, nil
+}
+
+func newBreaker() *circuitbreaker.Breaker {
+	return circuitbreaker.New(circuitbreaker.Config{
+		Name: "mercadopago",
+		OnStateChange: func(name string, from, to circuitbreaker.State) {
+			logging.Warnf("circuit_breaker_state_changed name=%s from=%s to=%s", name, from, to)
+		},
+	})
 }
 
 func (c *Client) CreatePointsOrder(ctx context.Context, req model.PointsOrderRequest) (model.PointsOrder, error) {

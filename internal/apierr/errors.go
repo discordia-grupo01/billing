@@ -86,6 +86,8 @@ func Internal(c *gin.Context) {
 // respondan con el sobre en vez del texto plano de Gin.
 func RegisterFallbacks(r *gin.Engine) {
 	r.HandleMethodNotAllowed = true
+	r.RedirectTrailingSlash = false
+	r.RedirectFixedPath = false
 	r.NoRoute(NotFound)
 	r.NoMethod(func(c *gin.Context) {
 		// Gin arma Allow mezclando rutas con parámetro (DELETE /boosts/:id
